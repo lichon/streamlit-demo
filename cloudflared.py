@@ -1,10 +1,45 @@
 
+import shutil
 import subprocess
 import atexit
 from pathlib import Path
 
+from urllib.request import urlopen
+from tqdm.auto import tqdm
+
 from pycloudflared.try_cloudflare import Urls, url_pattern, metrics_pattern
-from pycloudflared.util import get_info, download
+from pycloudflared.util import get_info, Info
+
+def download(info: Info | None = None) -> str:
+    if info is None:
+        info = get_info()
+
+    if info.system == "darwin" and info.machine == "arm64":
+        print(
+            "* On a MacOS system with an Apple Silicon chip, Rosetta 2 needs to be installed, refer to this guide to learn more: https://support.apple.com/en-us/HT211861"
+        )  # noqa: E501
+
+    dest = Path('/tmp') / info.url.split("/")[-1]
+
+    with urlopen(info.url) as resp:
+        total = int(resp.headers.get("Content-Length", 0))
+        with tqdm.wrapattr(
+            resp, "read", total=total, desc="Download cloudflared..."
+        ) as src:
+            with dest.open("wb") as dst:
+                shutil.copyfileobj(src, dst)
+
+    if info.system == "darwin":
+        # macOS file is a tgz archive
+        shutil.unpack_archive(dest, dest.parent)
+        dest.unlink()
+        excutable = dest.parent / "cloudflared"
+    else:
+        excutable = dest
+    excutable.chmod(0o777)
+
+    return str(excutable)
+
 
 class TryCloudflare:
     def __init__(self):
@@ -17,8 +52,9 @@ class TryCloudflare:
         verbose: bool = True,
     ) -> Urls:
         info = get_info()
+        info.executable = Path('/tmp') / info.url.split("/")[-1]
         if not Path(info.executable).exists():
-            download(info)
+            info.executable = download(info)
 
         port = int(port)
         if port in self.running:
