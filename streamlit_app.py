@@ -7,23 +7,18 @@ from streamlit.components.v1 import iframe
 
 def terminal(
     cmd: str = "echo terminal-speaking... && sleep 99999",
-    readonly: bool = False,
-    host: str = "http://localhost",
-    port: int = 0,
-    exit_on_disconnect: bool = True,
-    height: int = 400,
+    writable: bool = True,
+    port: int = 1234,
+    exit_on_disconnect: bool = False,
     ttyd = ""
 ):
     assert type(port) == int
 
-    if port == 0:
-        port = 1234
-
     flags = f"--port {port} "
     if exit_on_disconnect:
         flags += "--once "
-    if readonly:
-        flags += "--readonly"
+    if writable:
+        flags += "-W"
 
     # check if user provided path to ttyd
     ttyd = get_ttyd() if ttyd=="" else ttyd
@@ -36,15 +31,15 @@ def terminal(
 
     return ttydproc, port
 
-
-st.text("Terminal with bash")
-
-urls = cloudflared(1234)
+st.title("Streamlit Terminal")
 
 # start the ttyd server
-ttydprocess, port = terminal(cmd="-W bash", port=1234)
+terminal(cmd="bash", port=1234)
 
-iframe(urls.tunnel, height=600)
+tty_url = 'http://localhost:1234'
+tty_url = cloudflared(1234).tunnel
+
+iframe(tty_url, height=600)
 
 # info on ttyd port
-st.text(f"ttyd server is running {urls.tunnel} on port : {port}")
+st.text(f"ttyd server is running at {tty_url}")
