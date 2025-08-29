@@ -54,10 +54,9 @@ async def prepare_proxy_offer(signal_sid: str):
 
 async def setup_proxy_offer(sid: str):
     global proxy_pc
-    pc = proxy_pc
     proxy_log(sid, "setting up")
     try:
-        if not pc:
+        if not proxy_pc:
             proxy_log(sid, "pc is None")
             return
         async with httpx.AsyncClient() as client:
@@ -66,8 +65,12 @@ async def setup_proxy_offer(sid: str):
             answer = signal.get('answer')
             proxy_log(sid, f"remote signal answer {'ready' if answer else 'not ready'}")  
             if answer and sid == signal.get('notifySid'):
-                await pc.setRemoteDescription(RTCSessionDescription(answer, 'answer'))
                 proxy_log(sid, f"set remote sdp")
+                await proxy_pc.setRemoteDescription(RTCSessionDescription(answer, 'answer'))
+            else:
+                proxy_log(sid, f"retry in 1s")
+                later = lambda: asyncio.ensure_future(setup_proxy_offer(sid))
+                asyncio.get_event_loop().call_later(1, later)
     finally:
         signal_log('new', "skip restarting signal")
         #await run_signal()
@@ -102,7 +105,7 @@ async def run_client():
             await client.patch(f'{session_url}/{sid}', content=offer)
             client_log(sid, f'kick signal')
 
-            await asyncio.sleep(30)
+            await asyncio.sleep(20)
             await signal_pc.setRemoteDescription(RTCSessionDescription(remoteSdp, 'answer'))
 
 
