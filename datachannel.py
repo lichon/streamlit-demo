@@ -69,8 +69,8 @@ async def setup_proxy_offer(sid: str):
                 await pc.setRemoteDescription(RTCSessionDescription(answer, 'answer'))
                 proxy_log(sid, f"set remote sdp")
     finally:
-        signal_log('new', "restarting signal")
-        await run_signal()
+        signal_log('new', "skip restarting signal")
+        #await run_signal()
 
 
 async def run_client():
@@ -91,13 +91,19 @@ async def run_client():
         sid = signal.get('notifySid')
         offer = signal.get('offer')
         if sid and offer:
-            await signal_pc.setRemoteDescription(RTCSessionDescription(offer, 'offer'))
-            answer = await signal_pc.createAnswer()
-            await client.post(signal_url, json={'notifySid': sid, 'answer': answer.sdp})
-            await signal_pc.setLocalDescription(answer)
+            signal_pc.createDataChannel("proxy")
+            await signal_pc.setLocalDescription(await signal_pc.createOffer())
+            localSdp = signal_pc.localDescription.sdp.replace('a=setup:actpass', 'a=setup:passive')
+            remoteSdp = offer.replace('a=setup:actpass', 'a=setup:active')
+            #answer = await signal_pc.createAnswer()
+            #await signal_pc.setLocalDescription(answer)
+            await client.post(signal_url, json={'notifySid': sid, 'answer': localSdp})
             # kick signal session
             await client.patch(f'{session_url}/{sid}', content=offer)
             client_log(sid, f'kick signal')
+
+            await asyncio.sleep(30)
+            await signal_pc.setRemoteDescription(RTCSessionDescription(remoteSdp, 'answer'))
 
 async def run_test(sid: str):
     global signal_pc
@@ -146,9 +152,9 @@ async def run_signal():
 async def main():
     global signal_pc
     try:
-        if len(sys.argv) > 2:
+        if '--test' in sys.argv:
             await run_test(sys.argv[2])
-        elif len(sys.argv) == 2:
+        elif '--client' in sys.argv:
             await run_client()
         else:
             await run_signal()
@@ -164,8 +170,9 @@ async def main():
 if __name__ == '__main__':
     import sys
     # Setup logging configuration
+    debug = '--debug' in sys.argv
     logging.basicConfig(
-        level=logging.INFO,
+        level=logging.DEBUG if debug else logging.INFO,
         format='%(asctime)s %(name)s %(levelname)s %(message)s'
     )
     asyncio.run(main())
