@@ -105,16 +105,6 @@ async def run_client():
             await asyncio.sleep(30)
             await signal_pc.setRemoteDescription(RTCSessionDescription(remoteSdp, 'answer'))
 
-async def run_test(sid: str):
-    global signal_pc
-    signal_pc = RTCPeerConnection(default_config)
-    signal_pc.createDataChannel("bootstrap")
-    offer = await signal_pc.createOffer()
-    client_log(sid, f'{offer}')
-    async with httpx.AsyncClient() as client:
-        # kick signal session
-        await client.patch(f'{session_url}/{sid}', content=offer.sdp)
-
 
 async def run_signal():
     global signal_pc
@@ -149,13 +139,35 @@ async def run_signal():
         signal_log(sid, f"session ready")
 
 
+async def kill_session_test(sid: str):
+    global signal_pc
+    signal_pc = RTCPeerConnection(default_config)
+    signal_pc.createDataChannel("bootstrap")
+    offer = await signal_pc.createOffer()
+    client_log(sid, f'{offer}')
+    async with httpx.AsyncClient() as client:
+        # kick signal session
+        await client.patch(f'{session_url}/{sid}', content=offer.sdp)
+
+
+async def stun_test(hostport: str):
+    from aiortc import RTCIceGatherer
+    iceGatherer = RTCIceGatherer(
+        iceServers=[RTCIceServer(f'stun:{hostport}')]
+        if hostport else default_config.iceServers
+    )
+    await iceGatherer.gather()
+
+
 async def main():
     global signal_pc
     try:
-        if '--test' in sys.argv:
-            await run_test(sys.argv[2])
-        elif '--client' in sys.argv:
+        if '--client' in sys.argv:
             await run_client()
+        elif '--stun' in sys.argv:
+            await stun_test(sys.argv[2] if len(sys.argv) > 2 else None)
+        elif '--test' in sys.argv:
+            await kill_session_test(sys.argv[2])
         else:
             await run_signal()
         while True:
