@@ -65,7 +65,7 @@ async def setup_proxy_offer(sid: str):
             resp = await client.get(signal_url)
             signal = resp.json()
             answer = signal.get('answer')
-            proxy_log(sid, f"remote signal answer ready {answer ? 'found' : 'not found'}")
+            proxy_log(sid, f"remote signal answer {'ready' if answer else 'not ready'}")  
             if answer and sid == signal.get('notifySid'):
                 await pc.setRemoteDescription(RTCSessionDescription(answer, 'answer'))
                 proxy_log(sid, f"set remote sdp")
