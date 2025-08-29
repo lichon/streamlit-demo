@@ -4,8 +4,7 @@ import logging
 
 from aiortc import RTCIceServer, RTCPeerConnection, RTCSessionDescription, RTCConfiguration
 
-#ice_server = 'stun:stun.cloudflare.com:3478'
-ice_server = 'stun:47.106.248.64:3478'
+#iceServers=[RTCIceServer('stun:stun.cloudflare.com:3478')]
 default_config = RTCConfiguration()
 session_url = 'https://cfstream.lichon.cc/api/sessions'
 signal_url = 'https://cfstream.lichon.cc/api/signals/dc1234'
@@ -28,87 +27,55 @@ def client_log(sid: str, msg: str):
     client_logger.info(msg=f"{sid} {msg}")
 
 
-async def prepare_proxy_offer(signal_sid: str):
+async def start_proxy(sid: str, offer: str):
     global proxy_pc
-    proxy_log(signal_sid, "pc preparing")
+    proxy_log(sid, "starting proxy")
     proxy_pc = pc = RTCPeerConnection(default_config)
     channel = pc.createDataChannel("proxy")
 
     @pc.on("connectionstatechange")
     def on_connection_state():
-        proxy_log(signal_sid, f"{pc.connectionState}")
+        proxy_log(sid, f"{pc.connectionState}")
+
+    @pc.on("iceconnectionstatechange")
+    def on_ice_connection_state():
+        signal_log(sid, f"ice {pc.iceConnectionState}")
 
     @channel.on("open")
     def on_open():
-        proxy_log(signal_sid, f"channel opened")
+        proxy_log(sid, f"channel opened")
 
     @channel.on("message")
     def on_message(message):
-        proxy_log(signal_sid, f"channel msg < {message}")
+        proxy_log(sid, f"channel msg < {message}")
 
     await pc.setLocalDescription(await pc.createOffer())
+    proxy_sdp = pc.localDescription.sdp.replace('a=setup:actpass', 'a=setup:passive')
     async with httpx.AsyncClient() as client:
-        await client.post(signal_url, json={'notifySid': signal_sid, 'offer': pc.localDescription.sdp})
-    proxy_log(signal_sid, f"pc ready")
-    return pc
+        await client.post(signal_url, json={'sid': sid, 'answer': proxy_sdp})
+
+    await pc.setRemoteDescription(RTCSessionDescription(offer, 'answer'))
 
 
-async def setup_proxy_offer(sid: str):
+async def check_client_offer(sid: str):
     global proxy_pc
-    proxy_log(sid, "setting up")
+    proxy_log(sid, "checking client offer")
     try:
-        if not proxy_pc:
-            proxy_log(sid, "pc is None")
-            return
         async with httpx.AsyncClient() as client:
             resp = await client.get(signal_url)
             signal = resp.json()
-            answer = signal.get('answer')
-            proxy_log(sid, f"remote signal answer {'ready' if answer else 'not ready'}")  
-            if answer and sid == signal.get('notifySid'):
-                proxy_log(sid, f"set remote sdp")
-                await proxy_pc.setRemoteDescription(RTCSessionDescription(answer, 'answer'))
+            offer = signal.get('offer')
+            current_sid = signal.get('sid')
+            if offer and current_sid == sid:
+                proxy_log(sid, "offer ready")
+                await start_proxy(sid, offer)
             else:
-                proxy_log(sid, f"retry in 1s")
-                later = lambda: asyncio.ensure_future(setup_proxy_offer(sid))
-                asyncio.get_event_loop().call_later(1, later)
+                proxy_log(sid, f"retry in 2s")
+                later = lambda: asyncio.ensure_future(check_client_offer(sid))
+                asyncio.get_event_loop().call_later(2, later)
     finally:
         signal_log('new', "skip restarting signal")
         #await run_signal()
-
-
-async def run_client():
-    global signal_pc
-    signal_pc = RTCPeerConnection(default_config)
-    sid = None
-    offer = None
-
-    @signal_pc.on("connectionstatechange")
-    def on_connection_state():
-        client_log(sid, f"{signal_pc.connectionState}")
-
-    async with httpx.AsyncClient() as client:
-        resp = await client.get(signal_url)
-        if resp.status_code != 200:
-            return
-        signal = resp.json()
-        sid = signal.get('notifySid')
-        offer = signal.get('offer')
-        if sid and offer:
-            signal_pc.createDataChannel("proxy")
-            await signal_pc.setLocalDescription(await signal_pc.createOffer())
-            localSdp = signal_pc.localDescription.sdp.replace('a=setup:actpass', 'a=setup:passive')
-            remoteSdp = offer.replace('a=setup:actpass', 'a=setup:active')
-            #answer = await signal_pc.createAnswer()
-            #await signal_pc.setLocalDescription(answer)
-            await client.post(signal_url, json={'notifySid': sid, 'answer': localSdp})
-            # kick signal session
-            await client.patch(f'{session_url}/{sid}', content=offer)
-            client_log(sid, f'kick signal')
-
-            await asyncio.sleep(20)
-            await signal_pc.setRemoteDescription(RTCSessionDescription(remoteSdp, 'answer'))
-
 
 async def run_signal():
     global signal_pc
@@ -120,17 +87,8 @@ async def run_signal():
     def on_connection_state():
         signal_log(sid, f"{signal_pc.connectionState}")
         if signal_pc.connectionState in ['failed', 'closed']:
-            setup = lambda: asyncio.ensure_future(setup_proxy_offer(sid))
-            asyncio.get_event_loop().call_soon(setup)
-
-    @signal_pc.on("iceconnectionstatechange")
-    def on_ice_connection_state():
-        signal_log(sid, f"ice {signal_pc.iceConnectionState}")
-
-    @channel.on("open")
-    def on_open():
-        signal_log(sid, f"channel opened")
-        asyncio.ensure_future(prepare_proxy_offer(sid))
+            prepare = lambda: asyncio.ensure_future(check_client_offer(sid))
+            asyncio.get_event_loop().call_soon(prepare)
 
     await signal_pc.setLocalDescription(await signal_pc.createOffer())
 
@@ -139,8 +97,65 @@ async def run_signal():
         sid = resp.headers['Location'].split('/')[-1]
         sdp = resp.text
         await signal_pc.setRemoteDescription(RTCSessionDescription(sdp, 'answer'))
-        await client.post(signal_url, json={'notifySid': sid})
+        await client.post(signal_url, json={'sid': sid})
         signal_log(sid, f"session ready")
+
+
+async def client_connect(sid : str):
+    global signal_pc
+    if not signal_pc:
+        client_log(sid, "pc is None")
+        return
+
+    async with httpx.AsyncClient() as client:
+        resp = await client.get(signal_url)
+        if resp.status_code != 200:
+            return
+
+        signal = resp.json()
+        current_sid = signal.get('sid')
+        answer = signal.get('answer')
+        if current_sid != sid or not answer:
+            client_log(sid, f"answer is not ready current sid {current_sid}")
+            later = lambda: asyncio.ensure_future(client_connect(sid))
+            asyncio.get_event_loop().call_later(2, later)
+            return
+
+        await signal_pc.setRemoteDescription(RTCSessionDescription(answer, 'answer'))
+
+
+async def run_client():
+    global signal_pc
+    signal_pc = RTCPeerConnection(default_config)
+    sid = None
+
+    @signal_pc.on("connectionstatechange")
+    def on_connection_state():
+        client_log(sid, f"{signal_pc.connectionState}")
+
+    async with httpx.AsyncClient() as client:
+        resp = await client.get(signal_url)
+        if resp.status_code != 200:
+            return
+
+        signal = resp.json()
+        sid = signal.get('sid')
+        if not sid:
+            # retry later
+            return
+
+        signal_pc.createDataChannel("proxy")
+        await signal_pc.setLocalDescription(await signal_pc.createOffer())
+        localSdp = signal_pc.localDescription.sdp.replace('a=setup:actpass', 'a=setup:active')
+
+        signal_update = client.post(signal_url, json={'sid': sid, 'offer': localSdp})
+        kick_session = client.patch(f'{session_url}/{sid}', content=localSdp)
+        await signal_update
+        await kick_session
+        client_log(sid, f'kick signal')
+
+        await asyncio.sleep(10)
+        await client_connect(sid)
 
 
 async def kill_session_test(sid: str):
@@ -175,7 +190,7 @@ async def main():
         else:
             await run_signal()
         while True:
-            await asyncio.sleep(1)
+            await asyncio.sleep(2)
     except KeyboardInterrupt:
         pass
     finally:
@@ -185,6 +200,9 @@ async def main():
 
 if __name__ == '__main__':
     import sys
+    from aioice import ice
+    ice.CONSENT_INTERVAL = 3
+    ice.CONSENT_FAILURES = 3
     # Setup logging configuration
     debug = '--debug' in sys.argv
     logging.basicConfig(
