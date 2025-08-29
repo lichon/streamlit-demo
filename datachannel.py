@@ -6,7 +6,7 @@ from aiortc import RTCIceServer, RTCPeerConnection, RTCSessionDescription, RTCCo
 
 #ice_server = 'stun:stun.cloudflare.com:3478'
 ice_server = 'stun:47.106.248.64:3478'
-default_config = RTCConfiguration([RTCIceServer(ice_server)])
+default_config = RTCConfiguration()
 session_url = 'https://cfstream.lichon.cc/api/sessions'
 signal_url = 'https://cfstream.lichon.cc/api/signals/dc1234'
 
