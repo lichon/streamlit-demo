@@ -1,5 +1,4 @@
 import asyncio
-import aioice.stun
 import httpx
 import logging
 
