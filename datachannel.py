@@ -38,6 +38,7 @@ async def handle_relay_dc(sid: str, dc: RTCDataChannel):
     def on_message(msg):
         if writer:
             writer.write(msg)
+            asyncio.ensure_future(writer.drain())
         else:
             buffer.append(msg)
 
@@ -50,8 +51,7 @@ async def handle_relay_dc(sid: str, dc: RTCDataChannel):
         reader, writer = await asyncio.open_connection(host, port)
         relay_log(sid, f'connected to {host}:{port}')
 
-        for b in buffer:
-            writer.write(b)
+        for b in buffer: writer.write(b)
         await writer.drain()
         buffer.clear()
 
@@ -147,8 +147,12 @@ async def client_connect(sid : str):
         signal = resp.json()
         current_sid = signal.get('sid')
         answer = signal.get('answer')
-        if current_sid != sid or not answer:
-            client_log(sid, f"answer is not ready current sid {current_sid}")
+        if current_sid != sid:
+            client_log(sid, f"sid updated to {current_sid}")
+            asyncio.get_event_loop().call_later(1, start_client)
+            return
+        if not answer:
+            client_log(sid, f"answer is not ready")
             later = lambda: asyncio.ensure_future(client_connect(sid))
             asyncio.get_event_loop().call_later(10, later)
             return
@@ -158,6 +162,9 @@ async def client_connect(sid : str):
 
 async def start_client():
     global signal_pc
+    if signal_pc:
+        signal_pc.close()
+
     signal_pc = RTCPeerConnection(default_config)
     sid = None
 
@@ -187,7 +194,7 @@ async def start_client():
         await asyncio.gather(post, patch)
         client_log(sid, f'kick signal')
 
-    await asyncio.sleep(10)
+    await asyncio.sleep(30)
     await client_connect(sid)
 
 
@@ -213,7 +220,7 @@ async def handle_request(reader: asyncio.StreamReader, writer: asyncio.StreamWri
             if dc.readyState != "open":
                 break
             dc.send(body)
-            await asyncio.sleep(0.01)
+            await asyncio.sleep(0)
     
     # request new dc
     if signal_pc and signal_pc.connectionState == 'connected':
@@ -233,12 +240,13 @@ async def handle_request(reader: asyncio.StreamReader, writer: asyncio.StreamWri
 
         @dc.on("message")
         def on_message(data):
+            proxy_logger.debug(f"<<< data len {len(data)} {dc.label}")
             writer.write(data)
+            asyncio.ensure_future(writer.drain())
     else:
         writer.write(b"HTTP/1.1 500 OK\r\n\r\n")
         await writer.drain()
         writer.close()
-        await writer.wait_closed()
 
 
 async def run_server():
