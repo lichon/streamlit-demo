@@ -11,6 +11,12 @@ class PeerTunnel:
     ) -> None:
         if self.is_alive():
             return
+        pip = subprocess.Popen(
+            f"pip install -r peer_requirements.txt",
+            shell=True,
+        )
+        print("Installing peer dependencies...")
+        pip.wait()
         self.proc = subprocess.Popen(
             f"python datachannel.py {'--debug' if debug else ''}",
             shell=True,
