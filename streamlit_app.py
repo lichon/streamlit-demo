@@ -36,13 +36,14 @@ def terminal(
 def signalRelay(
     debug: bool = False,
 ):
+    import sys
     global signalProc
     if signalProc:
         return
     signalProc = subprocess.Popen(
         f"python datachannel.py {'--debug' if debug else ''}",
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        stdout=None,
+        stderr=None,
         shell=True,
     )
 
