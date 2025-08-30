@@ -1,6 +1,7 @@
 import streamlit as st
 import subprocess
 
+from datachannel import signalRelay
 from cloudflared import cloudflared
 from streamlit_ttyd import get_ttyd
 from streamlit.components.v1 import iframe
@@ -30,6 +31,8 @@ def terminal(
     )
 
     return ttydproc, port
+
+signalRelay()
 
 st.title("Streamlit Terminal")
 

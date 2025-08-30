@@ -10,7 +10,6 @@ session_url = 'https://cfstream.lichon.cc/api/sessions'
 signal_url = 'https://cfstream.lichon.cc/api/signals/dc1234'
 
 signal_pc = None
-relay_pc = None
 relay_buffer_size = 4096
 
 proxy_logger = logging.getLogger('proxy ')
@@ -29,7 +28,7 @@ def client_log(sid: str, msg: str):
     client_logger.info(msg=f"{sid} {msg}")
 
 
-async def handle_relay_request(sid: str, dc: RTCDataChannel):
+async def handle_relay_dc(sid: str, dc: RTCDataChannel):
     relay_log(sid, f"starting relay to {dc.label}")
     host, port = dc.label.split(':')
     writer = None
@@ -69,11 +68,10 @@ async def handle_relay_request(sid: str, dc: RTCDataChannel):
         writer.close()
         dc.close()
 
-async def start_relay_server(sid: str, offer: str):
-    global relay_pc
+async def start_relay_dc(sid: str, offer: str):
     relay_log(sid, "starting relay dc")
-    relay_pc = pc = RTCPeerConnection(default_config)
-    bootstrap_dc = pc.createDataChannel("bootstrap")
+    pc = RTCPeerConnection(default_config)
+    pc.createDataChannel("bootstrap")
 
     @pc.on("connectionstatechange")
     def on_connection_state():
@@ -86,18 +84,17 @@ async def start_relay_server(sid: str, offer: str):
         relay_log(sid, f"new dc request {dc.label}")
         if (dc.label == "client bootstrap"):
             return
-        asyncio.create_task(handle_relay_request(sid, dc))
+        asyncio.create_task(handle_relay_dc(sid, dc))
 
     await pc.setLocalDescription(await pc.createOffer())
-    proxy_sdp = pc.localDescription.sdp.replace('a=setup:actpass', 'a=setup:passive')
+    relay_sdp = pc.localDescription.sdp.replace('a=setup:actpass', 'a=setup:passive')
     async with httpx.AsyncClient() as client:
-        await client.post(signal_url, json={'sid': sid, 'answer': proxy_sdp})
+        await client.post(signal_url, json={'sid': sid, 'answer': relay_sdp})
 
     await pc.setRemoteDescription(RTCSessionDescription(offer, 'answer'))
 
 
 async def check_client_offer(sid: str):
-    global relay_pc
     relay_log(sid, "checking client offer")
     async with httpx.AsyncClient() as client:
         resp = await client.get(signal_url)
@@ -106,7 +103,7 @@ async def check_client_offer(sid: str):
         current_sid = signal.get('sid')
         if offer and current_sid == sid:
             relay_log(sid, "offer ready")
-            await start_relay_server(sid, offer)
+            await start_relay_dc(sid, offer)
         else:
             relay_log(sid, f"retry in 10s")
             later = lambda: asyncio.ensure_future(check_client_offer(sid))
@@ -153,7 +150,7 @@ async def client_connect(sid : str):
         if current_sid != sid or not answer:
             client_log(sid, f"answer is not ready current sid {current_sid}")
             later = lambda: asyncio.ensure_future(client_connect(sid))
-            asyncio.get_event_loop().call_later(2, later)
+            asyncio.get_event_loop().call_later(10, later)
             return
 
         await signal_pc.setRemoteDescription(RTCSessionDescription(answer, 'answer'))
@@ -271,6 +268,28 @@ async def main():
         if signal_pc:
             await signal_pc.close()
             signal_pc = None
+
+
+class SignalRelay:
+    def __init__(self):
+        self.pc: RTCPeerConnection = None
+
+    def __call__(
+        self,
+        debug: bool = False,
+    ):
+        global signal_pc
+        if signal_pc:
+            return
+        logging.basicConfig(
+            level=logging.DEBUG if debug else logging.INFO,
+            format='%(asctime)s %(name)s %(levelname)s %(message)s'
+        )
+        asyncio.run(run_signal())
+
+
+signalRelay = SignalRelay()
+
 
 if __name__ == '__main__':
     import sys
