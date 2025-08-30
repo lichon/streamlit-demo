@@ -78,6 +78,8 @@ async def start_relay_server(sid: str, offer: str):
     @pc.on("connectionstatechange")
     def on_connection_state():
         relay_log(sid, f"{pc.connectionState}")
+        if pc.connectionState in ["failed", "closed", "connected"]:
+            asyncio.get_event_loop().create_task(run_signal())
 
     @pc.on("datachannel")
     def on_new_channel(dc: RTCDataChannel):
@@ -85,11 +87,6 @@ async def start_relay_server(sid: str, offer: str):
         if (dc.label == "client bootstrap"):
             return
         asyncio.create_task(handle_relay_request(sid, dc))
-
-    @bootstrap_dc.on("open")
-    def on_open():
-        relay_log(sid, "channel open, restarting signal")
-        asyncio.get_event_loop().create_task(run_signal())
 
     await pc.setLocalDescription(await pc.createOffer())
     proxy_sdp = pc.localDescription.sdp.replace('a=setup:actpass', 'a=setup:passive')
@@ -111,9 +108,9 @@ async def check_client_offer(sid: str):
             relay_log(sid, "offer ready")
             await start_relay_server(sid, offer)
         else:
-            relay_log(sid, f"retry in 2s")
+            relay_log(sid, f"retry in 10s")
             later = lambda: asyncio.ensure_future(check_client_offer(sid))
-            asyncio.get_event_loop().call_later(2, later)
+            asyncio.get_event_loop().call_later(10, later)
 
 async def run_signal():
     global signal_pc
@@ -174,12 +171,14 @@ async def start_client():
     async with httpx.AsyncClient() as client:
         resp = await client.get(signal_url)
         if resp.status_code != 200:
+            asyncio.get_event_loop().call_later(2, start_client)
             return
 
         signal = resp.json()
         sid = signal.get('sid')
-        if not sid:
-            # retry later
+        if not sid or signal.get('offer') or signal.get('answer'):
+            client_log(sid, 'signal is connecting by other client')
+            asyncio.get_event_loop().call_later(2, start_client)
             return
 
         signal_pc.createDataChannel("client bootstrap")
@@ -197,7 +196,13 @@ async def start_client():
 
 async def handle_request(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
     global signal_pc
-    request = await reader.readuntil(b'\r\n\r\n')
+    try:
+        request = await reader.readuntil(b'\r\n\r\n')
+    except Exception as e:
+        writer.write(b'HTTP/1.1 400 Bad Request\r\n\r\n')
+        writer.close()
+        return
+
     headers = request.decode()
     
     request_line = headers.split('\n')[0]
@@ -208,9 +213,10 @@ async def handle_request(reader: asyncio.StreamReader, writer: asyncio.StreamWri
     async def handle_body(dc: RTCDataChannel):
         while not reader.at_eof():
             body = await reader.read(relay_buffer_size)
+            if dc.readyState != "open":
+                break
             dc.send(body)
             await asyncio.sleep(0.01)
-        proxy_logger.info(f"body finished...")
     
     # request new dc
     if signal_pc and signal_pc.connectionState == 'connected':
@@ -225,7 +231,7 @@ async def handle_request(reader: asyncio.StreamReader, writer: asyncio.StreamWri
 
         @dc.on("close")
         def on_close():
-            proxy_logger.info(f"close dc for {path}")
+            #proxy_logger.info(f"close dc for {path}")
             writer.close()
 
         @dc.on("message")
@@ -268,9 +274,6 @@ async def main():
 
 if __name__ == '__main__':
     import sys
-    from aioice import ice
-    ice.CONSENT_INTERVAL = 3
-    ice.CONSENT_FAILURES = 3
     # Setup logging configuration
     debug = '--debug' in sys.argv
     logging.basicConfig(
