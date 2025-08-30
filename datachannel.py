@@ -270,27 +270,6 @@ async def main():
             signal_pc = None
 
 
-class SignalRelay:
-    def __init__(self):
-        self.pc: RTCPeerConnection = None
-
-    def __call__(
-        self,
-        debug: bool = False,
-    ):
-        global signal_pc
-        if signal_pc:
-            return
-        logging.basicConfig(
-            level=logging.DEBUG if debug else logging.INFO,
-            format='%(asctime)s %(name)s %(levelname)s %(message)s'
-        )
-        asyncio.run(run_signal())
-
-
-signalRelay = SignalRelay()
-
-
 if __name__ == '__main__':
     import sys
     # Setup logging configuration

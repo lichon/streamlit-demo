@@ -1,10 +1,11 @@
 import streamlit as st
 import subprocess
 
-from datachannel import signalRelay
 from cloudflared import cloudflared
 from streamlit_ttyd import get_ttyd
 from streamlit.components.v1 import iframe
+
+signalProc = None
 
 def terminal(
     cmd: str = "echo terminal-speaking... && sleep 99999",
@@ -31,6 +32,19 @@ def terminal(
     )
 
     return ttydproc, port
+
+def signalRelay(
+    debug: bool = False,
+):
+    global signalProc
+    if signalProc:
+        return
+    signalProc = subprocess.Popen(
+        f"python datachannel.py {'--debug' if debug else ''}",
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        shell=False,
+    )
 
 signalRelay()
 
