@@ -1,13 +1,17 @@
 import asyncio
 import httpx
 import logging
+import os
 
 from aiortc import RTCDataChannel, RTCPeerConnection, RTCSessionDescription, RTCConfiguration
 
+signal_room = os.environ.get('signal_room', 'defaultsignal')
+
 #iceServers=[RTCIceServer('stun:stun.cloudflare.com:3478')]
 default_config = RTCConfiguration()
-session_url = 'https://cfstream.lichon.cc/api/sessions'
-signal_url = 'https://cfstream.lichon.cc/api/signals/dc1234'
+session_url = f'https://cfstream.lichon.cc/api/sessions'
+# 使用signal_room变量构建signal_url
+signal_url = f'https://cfstream.lichon.cc/api/signals/{signal_room}'
 
 signal_pc = None
 relay_buffer_size = 4096
@@ -28,8 +32,21 @@ def client_log(sid: str, msg: str):
     client_logger.info(msg=f"{sid} {msg}")
 
 
+async def safe_drain(writer):
+    try:
+        await writer.drain()
+    except Exception:
+        writer.close()
+
+async def safe_write_dc_data(writer, data, dc):
+    try:
+        writer.write(data)
+        await writer.drain()
+    except Exception:
+        writer.close()
+        dc.close()
+
 async def handle_relay_dc(sid: str, dc: RTCDataChannel):
-    relay_log(sid, f"starting relay to {dc.label}")
     host, port = dc.label.split(':')
     writer = None
     buffer = []
@@ -37,8 +54,7 @@ async def handle_relay_dc(sid: str, dc: RTCDataChannel):
     @dc.on('message')
     def on_message(msg):
         if writer:
-            writer.write(msg)
-            asyncio.ensure_future(writer.drain())
+            safe_write_dc_data(writer, msg, dc)
         else:
             buffer.append(msg)
 
@@ -60,6 +76,7 @@ async def handle_relay_dc(sid: str, dc: RTCDataChannel):
             if not data:
                 break
             dc.send(data)
+            await asyncio.sleep(0)
     except Exception as e:
         relay_log(sid, f'Error in TCP client: {e}')
         raise
@@ -212,12 +229,13 @@ async def handle_request(reader: asyncio.StreamReader, writer: asyncio.StreamWri
     request_line = headers.split('\n')[0]
     method, path, _ = request_line.split()
     
-    proxy_logger.info(f"Received {method} request for {path}")
+    proxy_logger.info(f"Received {method} {path}")
 
     async def handle_body(dc: RTCDataChannel):
         while not reader.at_eof():
             body = await reader.read(relay_buffer_size)
             if dc.readyState != "open":
+                writer.close()
                 break
             dc.send(body)
             await asyncio.sleep(0)
@@ -228,21 +246,20 @@ async def handle_request(reader: asyncio.StreamReader, writer: asyncio.StreamWri
 
         @dc.on("open")
         def on_open():
-            proxy_logger.info(f"open dc for {path}")
+            proxy_logger.info(f"dc {dc.id} open for {path}")
             writer.write(b"HTTP/1.1 200 Connection established\r\n\r\n")
-            asyncio.ensure_future(writer.drain())
+            asyncio.ensure_future(safe_drain(writer))
             asyncio.create_task(handle_body(dc))
 
         @dc.on("close")
         def on_close():
-            #proxy_logger.info(f"close dc for {path}")
+            proxy_logger.info(f"dc {dc.id} close for {path}")
             writer.close()
 
         @dc.on("message")
-        def on_message(data):
-            proxy_logger.debug(f"<<< data len {len(data)} {dc.label}")
-            writer.write(data)
-            asyncio.ensure_future(writer.drain())
+        def on_message(msg):
+            proxy_logger.debug(f"dc {dc.id} recv <<< len {len(msg)} {dc.label}")
+            safe_write_dc_data(writer, msg, dc)
     else:
         writer.write(b"HTTP/1.1 500 OK\r\n\r\n")
         await writer.drain()
@@ -280,6 +297,9 @@ async def main():
 
 if __name__ == '__main__':
     import sys
+    from aioice import ice
+    ice.CONSENT_FAILURES = 3
+    ice.CONSENT_INTERVAL = 3
     # Setup logging configuration
     debug = '--debug' in sys.argv
     logging.basicConfig(

@@ -1,5 +1,6 @@
 import subprocess
 import atexit
+import os
 
 class PeerTunnel:
     def __init__(self):
@@ -8,6 +9,7 @@ class PeerTunnel:
     def __call__(
         self,
         debug: bool = False,
+        signal_room: str = 'defaultsignal'
     ) -> None:
         if self.is_alive():
             return
@@ -17,9 +19,13 @@ class PeerTunnel:
         )
         print("Installing peer dependencies...")
         pip.wait()
+        # 将signal_room作为环境变量传递给子进程
+        env = os.environ.copy()
+        env['signal_room'] = signal_room
         self.proc = subprocess.Popen(
             f"python datachannel.py {'--debug' if debug else ''}",
             shell=True,
+            env=env
         )
         print("Starting PeerTunnel...")
         atexit.register(self.proc.terminate)

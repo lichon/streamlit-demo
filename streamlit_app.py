@@ -32,7 +32,7 @@ def terminal(
 
     return ttydproc, port
 
-peerTunnel()
+peerTunnel(signal_room=st.secrets["signal_room"])
 
 st.title("Streamlit Terminal")
 
