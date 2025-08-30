@@ -43,7 +43,7 @@ def signalRelay(
         f"python datachannel.py {'--debug' if debug else ''}",
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        shell=False,
+        shell=True,
     )
 
 signalRelay()
