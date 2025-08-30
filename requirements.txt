@@ -1,5 +1,5 @@
 streamlit
 pycloudflared
 streamlit_ttyd
-aiortc
-httpx
+aiortc==1.13.0
+httpx==0.28.1
