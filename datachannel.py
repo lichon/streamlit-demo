@@ -35,9 +35,9 @@ def client_log(sid: str, msg: str):
     client_logger.info(msg=f"{sid} {msg}")
 
 
-def safe_close(writer):
+def safe_close(writer: asyncio.StreamWriter):
     try:
-        if writer:
+        if writer and not writer.is_closing():
             writer.close()
     except Exception:
         pass
@@ -51,11 +51,15 @@ async def safe_drain(writer):
         await safe_close(writer)
 
 
-async def safe_write_dc_data(writer, data, dc):
+async def safe_write_dc_data(writer: asyncio.StreamWriter, data, dc):
+    if not writer or writer.is_closing():
+        dc.close()
+        return
     try:
         writer.write(data)
         await writer.drain()
-    except Exception:
+    except Exception as e:
+        proxy_logger.warning(f"dc {dc.id} write to stream failed: {e}")
         safe_close(writer)
         dc.close()
 
@@ -251,7 +255,7 @@ async def handle_request(reader: asyncio.StreamReader, writer: asyncio.StreamWri
         writer.write(b'HTTP/1.1 400 Bad Request\r\n\r\n')
         safe_close(writer)
         return
-    
+
     proxy_logger.info(f"Received {method} {netloc}")
     is_connect = method == 'CONNECT'
     # https proxy only
