@@ -276,7 +276,7 @@ async def handle_request(reader: asyncio.StreamReader, writer: asyncio.StreamWri
             asyncio.ensure_future(safe_write_dc_data(writer, msg, dc))
     else:
         proxy_logger.info(f'rejecting {path}')
-        writer.write(b"HTTP/1.1 500 OK\r\n\r\n")
+        writer.write(b"HTTP/1.1 500 Not ready\r\n\r\n")
         await writer.drain()
         writer.close()
 
