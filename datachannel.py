@@ -15,6 +15,7 @@ signal_url = f'https://cfstream.lichon.cc/api/signals/{signal_room}'
 
 signal_pc = None
 relay_buffer_size = 4096
+client_delay = 30
 
 proxy_logger = logging.getLogger('proxy ')
 relay_logger = logging.getLogger('relay ')
@@ -54,34 +55,40 @@ async def handle_relay_dc(sid: str, dc: RTCDataChannel):
     @dc.on('message')
     def on_message(msg):
         if writer:
-            safe_write_dc_data(writer, msg, dc)
+            asyncio.ensure_future(safe_write_dc_data(writer, msg, dc))
         else:
             buffer.append(msg)
 
     @dc.on('close')
     def on_close():
+        relay_log(sid, f'dc {dc.id} closed {dc.label}')
         if writer:
             writer.close()
 
     try:
         reader, writer = await asyncio.open_connection(host, port)
-        relay_log(sid, f'connected to {host}:{port}')
+        relay_log(sid, f'dc {dc.id} connected to {dc.label}')
 
         for b in buffer: writer.write(b)
         await writer.drain()
         buffer.clear()
 
         while True:
+            if (dc.bufferedAmount > relay_buffer_size * 100):
+                relay_log(sid, f'client receive buffer full, waiting')
+                await asyncio.sleep(0.1)
+            else:
+                await asyncio.sleep(0)
             data = await reader.read(relay_buffer_size)
             if not data:
                 break
             dc.send(data)
-            await asyncio.sleep(0)
+
     except Exception as e:
-        relay_log(sid, f'Error in TCP client: {e}')
+        relay_log(sid, f'dc {dc.id} error: {e}')
         raise
     finally:
-        relay_log(sid, f'closing to {host}:{port}')
+        relay_log(sid, f'dc {dc.id} final clear')
         writer.close()
         dc.close()
 
@@ -98,7 +105,7 @@ async def start_relay_dc(sid: str, offer: str):
 
     @pc.on("datachannel")
     def on_new_channel(dc: RTCDataChannel):
-        relay_log(sid, f"new dc request {dc.label}")
+        relay_log(sid, f"dc {dc.id} request {dc.label}")
         if (dc.label == "client bootstrap"):
             return
         asyncio.create_task(handle_relay_dc(sid, dc))
@@ -166,7 +173,8 @@ async def client_connect(sid : str):
         answer = signal.get('answer')
         if current_sid != sid:
             client_log(sid, f"sid updated to {current_sid}")
-            asyncio.get_event_loop().call_later(1, start_client)
+            later = lambda: asyncio.ensure_future(start_client())
+            asyncio.get_event_loop().call_later(1, later)
             return
         if not answer:
             client_log(sid, f"answer is not ready")
@@ -181,6 +189,7 @@ async def start_client():
     global signal_pc
     if signal_pc:
         signal_pc.close()
+    start_latter = lambda: asyncio.ensure_future(start_client())
 
     signal_pc = RTCPeerConnection(default_config)
     sid = None
@@ -192,14 +201,14 @@ async def start_client():
     async with httpx.AsyncClient() as client:
         resp = await client.get(signal_url)
         if resp.status_code != 200:
-            asyncio.get_event_loop().call_later(2, start_client)
+            asyncio.get_event_loop().call_later(2, start_latter())
             return
 
         signal = resp.json()
         sid = signal.get('sid')
         if not sid or signal.get('offer') or signal.get('answer'):
             client_log(sid, 'signal is connecting by other client')
-            asyncio.get_event_loop().call_later(2, start_client)
+            asyncio.get_event_loop().call_later(2, start_latter())
             return
 
         signal_pc.createDataChannel("client bootstrap")
@@ -211,7 +220,7 @@ async def start_client():
         await asyncio.gather(post, patch)
         client_log(sid, f'kick signal')
 
-    await asyncio.sleep(30)
+    await asyncio.sleep(client_delay)
     await client_connect(sid)
 
 
@@ -233,6 +242,11 @@ async def handle_request(reader: asyncio.StreamReader, writer: asyncio.StreamWri
 
     async def handle_body(dc: RTCDataChannel):
         while not reader.at_eof():
+            if (dc.bufferedAmount > relay_buffer_size * 100):
+                proxy_logger.info(f'client receive buffer full, waiting')
+                await asyncio.sleep(0.1)
+            else:
+                await asyncio.sleep(0)
             body = await reader.read(relay_buffer_size)
             if dc.readyState != "open":
                 writer.close()
@@ -258,9 +272,10 @@ async def handle_request(reader: asyncio.StreamReader, writer: asyncio.StreamWri
 
         @dc.on("message")
         def on_message(msg):
-            proxy_logger.debug(f"dc {dc.id} recv <<< len {len(msg)} {dc.label}")
-            safe_write_dc_data(writer, msg, dc)
+            #proxy_logger.info(f"dc {dc.id} recv <<< len {len(msg)} {dc.label}")
+            asyncio.ensure_future(safe_write_dc_data(writer, msg, dc))
     else:
+        proxy_logger.info(f'rejecting {path}')
         writer.write(b"HTTP/1.1 500 OK\r\n\r\n")
         await writer.drain()
         writer.close()
@@ -298,8 +313,9 @@ async def main():
 if __name__ == '__main__':
     import sys
     from aioice import ice
-    ice.CONSENT_FAILURES = 3
-    ice.CONSENT_INTERVAL = 3
+    ice.CONSENT_INTERVAL = 5
+    ice.CONSENT_FAILURES = 6
+    client_delay = ice.CONSENT_FAILURES * ice.CONSENT_INTERVAL
     # Setup logging configuration
     debug = '--debug' in sys.argv
     logging.basicConfig(
