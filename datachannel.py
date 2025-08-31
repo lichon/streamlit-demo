@@ -78,14 +78,16 @@ async def handle_relay_dc(sid: str, dc: RTCDataChannel):
 
         while True:
             if (dc.bufferedAmount > relay_buffer_size * 100):
-                relay_log(sid, f'client receive buffer full, waiting')
-                await asyncio.sleep(0.1)
+                #relay_log(sid, f'client receive buffer full, waiting')
+                await asyncio.sleep(1)
+                continue
             else:
                 await asyncio.sleep(0)
-            data = await reader.read(relay_buffer_size)
-            if not data:
+            body = await reader.read(relay_buffer_size)
+            if dc.readyState != "open":
+                writer.close()
                 break
-            dc.send(data)
+            dc.send(body)
 
     except Exception as e:
         relay_log(sid, f'dc {dc.id} error: {e}')
@@ -263,7 +265,6 @@ async def handle_request(reader: asyncio.StreamReader, writer: asyncio.StreamWri
                 writer.close()
                 break
             dc.send(body)
-            await asyncio.sleep(0)
     
     # request new dc
     if signal_pc and signal_pc.connectionState == 'connected':
