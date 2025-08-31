@@ -26,25 +26,50 @@ client_logger = logging.getLogger('client')
 def signal_log(sid: str, msg: str):
     signal_logger.info(msg=f"{sid} {msg}")
 
+
 def relay_log(sid: str, msg: str):
     relay_logger.info(msg=f"{sid} {msg}")
+
 
 def client_log(sid: str, msg: str):
     client_logger.info(msg=f"{sid} {msg}")
 
+
+def safe_close(writer):
+    try:
+        if writer:
+            writer.close()
+    except Exception:
+        pass
+
+
 async def safe_drain(writer):
     try:
-        await writer.drain()
+        if writer:
+            await writer.drain()
     except Exception:
-        writer.close()
+        await safe_close(writer)
+
 
 async def safe_write_dc_data(writer, data, dc):
     try:
         writer.write(data)
         await writer.drain()
     except Exception:
-        writer.close()
+        safe_close(writer)
         dc.close()
+
+
+async def relay_reader_to_dc(reader: asyncio.StreamReader, dc):
+    while not reader.at_eof():
+        if (dc.bufferedAmount > relay_buffer_size * 100):
+            # relay_log(sid, f'dc {dc.id} send buffer full, waiting')
+            await asyncio.sleep(1)
+            continue
+        body = await reader.read(relay_buffer_size)
+        if dc.readyState == "open":
+            dc.send(body)
+
 
 async def handle_relay_dc(sid: str, dc: RTCDataChannel):
     host, port = dc.label.split(':')
@@ -65,8 +90,7 @@ async def handle_relay_dc(sid: str, dc: RTCDataChannel):
     @dc.on('close')
     def on_close():
         relay_log(sid, f'dc {dc.id} closed {dc.label}')
-        if writer:
-            writer.close()
+        safe_close(writer)
 
     try:
         reader, writer = await asyncio.open_connection(host, port)
@@ -76,25 +100,13 @@ async def handle_relay_dc(sid: str, dc: RTCDataChannel):
         await writer.drain()
         buffer.clear()
 
-        while True:
-            if (dc.bufferedAmount > relay_buffer_size * 100):
-                #relay_log(sid, f'client receive buffer full, waiting')
-                await asyncio.sleep(1)
-                continue
-            else:
-                await asyncio.sleep(0)
-            body = await reader.read(relay_buffer_size)
-            if dc.readyState != "open":
-                writer.close()
-                break
-            dc.send(body)
-
+        await relay_reader_to_dc(reader, dc)
     except Exception as e:
         relay_log(sid, f'dc {dc.id} error: {e}')
         raise
     finally:
         relay_log(sid, f'dc {dc.id} final clear')
-        writer.close()
+        safe_close(writer)
         dc.close()
 
 async def start_relay_dc(sid: str, offer: str):
@@ -237,7 +249,7 @@ async def handle_request(reader: asyncio.StreamReader, writer: asyncio.StreamWri
         method, netloc, _ = request_line.split()
     except Exception as e:
         writer.write(b'HTTP/1.1 400 Bad Request\r\n\r\n')
-        writer.close()
+        safe_close(writer)
         return
     
     proxy_logger.info(f"Received {method} {netloc}")
@@ -250,21 +262,14 @@ async def handle_request(reader: asyncio.StreamReader, writer: asyncio.StreamWri
     # read all headers
     all_headers = await reader.readuntil(b'\r\n\r\n')
 
-    async def handle_body(dc: RTCDataChannel):
-        if not is_connect:
+    async def handle_dc_open(dc: RTCDataChannel):
+        if is_connect:
+            writer.write(b"HTTP/1.1 200 Connection established\r\n\r\n")
+            asyncio.ensure_future(safe_drain(writer))
+        else:
             dc.send(request_line.encode())
             dc.send(all_headers)
-        while not reader.at_eof():
-            if (dc.bufferedAmount > relay_buffer_size * 100):
-                proxy_logger.info(f'client receive buffer full, waiting')
-                await asyncio.sleep(0.1)
-            else:
-                await asyncio.sleep(0)
-            body = await reader.read(relay_buffer_size)
-            if dc.readyState != "open":
-                writer.close()
-                break
-            dc.send(body)
+        await relay_reader_to_dc(reader, dc)
     
     # request new dc
     if signal_pc and signal_pc.connectionState == 'connected':
@@ -273,15 +278,12 @@ async def handle_request(reader: asyncio.StreamReader, writer: asyncio.StreamWri
         @dc.on("open")
         def on_open():
             proxy_logger.info(f"dc {dc.id} open for {netloc}")
-            if is_connect:
-                writer.write(b"HTTP/1.1 200 Connection established\r\n\r\n")
-                asyncio.ensure_future(safe_drain(writer))
-            asyncio.create_task(handle_body(dc))
+            asyncio.create_task(handle_dc_open(dc))
 
         @dc.on("close")
         def on_close():
             proxy_logger.info(f"dc {dc.id} close for {netloc}")
-            writer.close()
+            safe_close(writer)
 
         @dc.on("message")
         def on_message(msg):
@@ -290,8 +292,7 @@ async def handle_request(reader: asyncio.StreamReader, writer: asyncio.StreamWri
     else:
         proxy_logger.info(f'rejecting {netloc}')
         writer.write(b"HTTP/1.1 500 Not ready\r\n\r\n")
-        await writer.drain()
-        writer.close()
+        safe_close(writer)
 
 
 async def run_proxy(port: int | None):
