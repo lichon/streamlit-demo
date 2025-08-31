@@ -232,23 +232,26 @@ async def handle_request(reader: asyncio.StreamReader, writer: asyncio.StreamWri
     global signal_pc
     try:
         request_line = (await reader.readline()).decode()
-        method, path, _ = request_line.split()
+        method, netloc, _ = request_line.split()
     except Exception as e:
         writer.write(b'HTTP/1.1 400 Bad Request\r\n\r\n')
         writer.close()
         return
     
-    proxy_logger.info(f"Received {method} {path}")
+    proxy_logger.info(f"Received {method} {netloc}")
+    is_connect = method == 'CONNECT'
     # https proxy only
-    if method != 'CONNECT':
-        writer.write(b'HTTP/1.1 400 Bad Request\r\n\r\n')
-        writer.close()
-        return
+    if not is_connect:
+        url = urllib.parse.urlparse(netloc)
+        netloc = f'{url.netloc}:{url.port or 80}'
 
     # read all headers
-    await reader.readuntil(b'\r\n\r\n')
+    all_headers = await reader.readuntil(b'\r\n\r\n')
 
     async def handle_body(dc: RTCDataChannel):
+        if not is_connect:
+            dc.send(request_line.encode())
+            dc.send(all_headers)
         while not reader.at_eof():
             if (dc.bufferedAmount > relay_buffer_size * 100):
                 proxy_logger.info(f'client receive buffer full, waiting')
@@ -264,18 +267,19 @@ async def handle_request(reader: asyncio.StreamReader, writer: asyncio.StreamWri
     
     # request new dc
     if signal_pc and signal_pc.connectionState == 'connected':
-        dc = signal_pc.createDataChannel(f'{path}')
+        dc = signal_pc.createDataChannel(f'{netloc}')
 
         @dc.on("open")
         def on_open():
-            proxy_logger.info(f"dc {dc.id} open for {path}")
-            writer.write(b"HTTP/1.1 200 Connection established\r\n\r\n")
-            asyncio.ensure_future(safe_drain(writer))
+            proxy_logger.info(f"dc {dc.id} open for {netloc}")
+            if is_connect:
+                writer.write(b"HTTP/1.1 200 Connection established\r\n\r\n")
+                asyncio.ensure_future(safe_drain(writer))
             asyncio.create_task(handle_body(dc))
 
         @dc.on("close")
         def on_close():
-            proxy_logger.info(f"dc {dc.id} close for {path}")
+            proxy_logger.info(f"dc {dc.id} close for {netloc}")
             writer.close()
 
         @dc.on("message")
@@ -283,7 +287,7 @@ async def handle_request(reader: asyncio.StreamReader, writer: asyncio.StreamWri
             #proxy_logger.info(f"dc {dc.id} recv <<< len {len(msg)} {dc.label}")
             asyncio.ensure_future(safe_write_dc_data(writer, msg, dc))
     else:
-        proxy_logger.info(f'rejecting {path}')
+        proxy_logger.info(f'rejecting {netloc}')
         writer.write(b"HTTP/1.1 500 Not ready\r\n\r\n")
         await writer.drain()
         writer.close()
