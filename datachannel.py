@@ -1,3 +1,4 @@
+import urllib.parse
 import asyncio
 import httpx
 import logging
@@ -31,7 +32,6 @@ def relay_log(sid: str, msg: str):
 def client_log(sid: str, msg: str):
     client_logger.info(msg=f"{sid} {msg}")
 
-
 async def safe_drain(writer):
     try:
         await writer.drain()
@@ -48,6 +48,10 @@ async def safe_write_dc_data(writer, data, dc):
 
 async def handle_relay_dc(sid: str, dc: RTCDataChannel):
     host, port = dc.label.split(':')
+    if not host or not port:
+        dc.close()
+        return
+
     writer = None
     buffer = []
 
@@ -187,7 +191,7 @@ async def client_connect(sid : str):
 async def start_client():
     global signal_pc
     if signal_pc:
-        signal_pc.close()
+        await signal_pc.close()
     start_latter = lambda: asyncio.ensure_future(start_client())
 
     signal_pc = RTCPeerConnection(default_config)
@@ -227,18 +231,22 @@ async def start_client():
 async def handle_request(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
     global signal_pc
     try:
-        request = await reader.readuntil(b'\r\n\r\n')
+        request_line = (await reader.readline()).decode()
+        method, path, _ = request_line.split()
     except Exception as e:
         writer.write(b'HTTP/1.1 400 Bad Request\r\n\r\n')
         writer.close()
         return
-
-    headers = request.decode()
-    
-    request_line = headers.split('\n')[0]
-    method, path, _ = request_line.split()
     
     proxy_logger.info(f"Received {method} {path}")
+    # https proxy only
+    if method != 'CONNECT':
+        writer.write(b'HTTP/1.1 400 Bad Request\r\n\r\n')
+        writer.close()
+        return
+
+    # read all headers
+    await reader.readuntil(b'\r\n\r\n')
 
     async def handle_body(dc: RTCDataChannel):
         while not reader.at_eof():

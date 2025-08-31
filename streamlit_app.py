@@ -8,6 +8,7 @@ from streamlit.components.v1 import iframe
 
 def terminal(
     cmd: str = "echo terminal-speaking... && sleep 99999",
+    auth: str = None,
     writable: bool = True,
     port: int = 1234,
     exit_on_disconnect: bool = False,
@@ -18,6 +19,8 @@ def terminal(
     flags = f"--port {port} "
     if exit_on_disconnect:
         flags += "--once "
+    if auth:
+        flags += f"--credential {auth} "
     if writable:
         flags += "-W"
 
@@ -37,7 +40,7 @@ peerTunnel(signal_room=st.secrets["signal_room"])
 st.title("Streamlit Terminal")
 
 # start the ttyd server
-terminal(cmd="bash", port=1234)
+terminal(cmd="bash", port=1234, auth=st.secrets["ttyd_auth"])
 
 tty_url = 'http://localhost:1234'
 tty_url = cloudflared(1234).tunnel
