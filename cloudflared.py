@@ -1,4 +1,3 @@
-
 import shutil
 import subprocess
 import atexit
@@ -8,7 +7,8 @@ from urllib.request import urlopen
 from tqdm.auto import tqdm
 
 from pycloudflared.try_cloudflare import Urls, url_pattern, metrics_pattern
-from pycloudflared.util import get_info, Info
+from pycloudflared.util import Info, get_info
+
 
 def download(info: Info | None = None) -> str:
     if info is None:
@@ -16,7 +16,10 @@ def download(info: Info | None = None) -> str:
 
     if info.system == "darwin" and info.machine == "arm64":
         print(
-            "* On a MacOS system with an Apple Silicon chip, Rosetta 2 needs to be installed, refer to this guide to learn more: https://support.apple.com/en-us/HT211861"
+            "* On a MacOS system with an Apple Silicon chip, "
+            "Rosetta 2 needs to be installed, "
+            "refer to this guide to learn more: "
+            "https://support.apple.com/en-us/HT211861"
         )  # noqa: E501
 
     dest = Path('/tmp') / info.url.split("/")[-1]
@@ -127,5 +130,6 @@ class TryCloudflare:
             del self.running[port]
         else:
             raise ValueError(f"port {port!r} is not running.")
+
 
 cloudflared = TryCloudflare()

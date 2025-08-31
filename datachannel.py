@@ -8,9 +8,8 @@ from aiortc import RTCDataChannel, RTCPeerConnection, RTCSessionDescription, RTC
 
 signal_room = os.environ.get('SIGNAL_ROOM', 'defaultsignal')
 
-#iceServers=[RTCIceServer('stun:stun.cloudflare.com:3478')]
 default_config = RTCConfiguration()
-session_url = f'https://cfstream.lichon.cc/api/sessions'
+session_url = 'https://cfstream.lichon.cc/api/sessions'
 signal_url = f'https://cfstream.lichon.cc/api/signals/{signal_room}'
 
 signal_pc = None
@@ -103,7 +102,8 @@ async def handle_relay_dc(sid: str, dc: RTCDataChannel):
         reader, writer = await asyncio.open_connection(host, port)
         relay_log(sid, f'dc {dc.id} connected to {dc.label}')
 
-        for b in buffer: writer.write(b)
+        for b in buffer:
+            writer.write(b)
         await writer.drain()
         buffer.clear()
 
@@ -115,6 +115,7 @@ async def handle_relay_dc(sid: str, dc: RTCDataChannel):
         relay_log(sid, f'dc {dc.id} final clear')
         safe_close(writer)
         dc.close()
+
 
 async def start_relay_dc(sid: str, offer: str):
     relay_log(sid, "starting relay dc")
@@ -143,6 +144,7 @@ async def start_relay_dc(sid: str, offer: str):
 
 
 async def check_client_offer(sid: str):
+    global signal_check_client_offer_times
     if signal_check_client_offer_times > signal_check_client_offer_max_times:
         # restart signal process
         asyncio.get_event_loop().create_task(run_signal())
@@ -159,9 +161,10 @@ async def check_client_offer(sid: str):
             relay_log(sid, "offer ready")
             await start_relay_dc(sid, offer)
         else:
-            relay_log(sid, f"retry in 10s")
-            later = lambda: asyncio.ensure_future(check_client_offer(sid))
+            relay_log(sid, "retry in 10s")
+            def later(): return asyncio.ensure_future(check_client_offer(sid))
             asyncio.get_event_loop().call_later(10, later)
+
 
 async def run_signal():
     global signal_pc
@@ -173,7 +176,7 @@ async def run_signal():
     def on_connection_state():
         signal_log(sid, f"{signal_pc.connectionState}")
         if signal_pc.connectionState in ['failed', 'closed']:
-            prepare = lambda: asyncio.ensure_future(check_client_offer(sid))
+            def prepare(): return asyncio.ensure_future(check_client_offer(sid))
             asyncio.get_event_loop().call_soon(prepare)
 
     await signal_pc.setLocalDescription(await signal_pc.createOffer())
@@ -187,7 +190,7 @@ async def run_signal():
         signal_log(sid, f"session ready")
 
 
-async def client_connect(sid : str):
+async def client_connect(sid: str):
     global signal_pc
     if not signal_pc or not sid:
         client_log(sid, "pc or sid is None")
@@ -203,12 +206,12 @@ async def client_connect(sid : str):
         answer = signal.get('answer')
         if current_sid != sid:
             client_log(sid, f"sid updated to {current_sid}")
-            later = lambda: asyncio.ensure_future(start_client())
+            def later(): return asyncio.ensure_future(start_client())
             asyncio.get_event_loop().call_later(1, later)
             return
         if not answer:
             client_log(sid, f"answer is not ready")
-            later = lambda: asyncio.ensure_future(client_connect(sid))
+            def later(): return asyncio.ensure_future(client_connect(sid))
             asyncio.get_event_loop().call_later(10, later)
             return
 
@@ -219,7 +222,8 @@ async def start_client():
     global signal_pc
     if signal_pc:
         await signal_pc.close()
-    start_latter = lambda: asyncio.ensure_future(start_client())
+
+    def start_latter(): return asyncio.ensure_future(start_client())
 
     signal_pc = RTCPeerConnection(default_config)
     sid = None
@@ -260,7 +264,7 @@ async def handle_request(reader: asyncio.StreamReader, writer: asyncio.StreamWri
     try:
         request_line = (await reader.readline()).decode()
         method, netloc, _ = request_line.split()
-    except Exception as e:
+    except Exception:
         writer.write(b'HTTP/1.1 400 Bad Request\r\n\r\n')
         safe_close(writer)
         return
@@ -283,7 +287,7 @@ async def handle_request(reader: asyncio.StreamReader, writer: asyncio.StreamWri
             dc.send(request_line.encode())
             dc.send(all_headers)
         await relay_reader_to_dc(reader, dc)
-    
+
     # request new dc
     if signal_pc and signal_pc.connectionState == 'connected':
         dc = signal_pc.createDataChannel(f'{netloc}')
@@ -300,7 +304,7 @@ async def handle_request(reader: asyncio.StreamReader, writer: asyncio.StreamWri
 
         @dc.on("message")
         def on_message(msg):
-            #proxy_logger.info(f"dc {dc.id} recv <<< len {len(msg)} {dc.label}")
+            # proxy_logger.info(f"dc {dc.id} recv <<< len {len(msg)} {dc.label}")
             asyncio.ensure_future(safe_write_dc_data(writer, msg, dc))
     else:
         proxy_logger.info(f'rejecting {netloc}')
@@ -315,7 +319,7 @@ async def run_proxy(port: int | None):
     proxy_logger.info(f'Local server running on {addr[0]}:{addr[1]}')
 
     async with server:
-        await server.serve_forever() 
+        await server.serve_forever()
 
 
 async def main():

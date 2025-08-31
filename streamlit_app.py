@@ -6,16 +6,15 @@ from cloudflared import cloudflared
 from streamlit_ttyd import get_ttyd
 from streamlit.components.v1 import iframe
 
+
 def terminal(
     cmd: str = "echo terminal-speaking... && sleep 99999",
     auth: str = None,
     writable: bool = True,
     port: int = 1234,
     exit_on_disconnect: bool = False,
-    ttyd = ""
+    ttyd: str = ""
 ):
-    assert type(port) == int
-
     flags = f"--port {port} "
     if exit_on_disconnect:
         flags += "--once "
@@ -25,15 +24,15 @@ def terminal(
         flags += "-W"
 
     # check if user provided path to ttyd
-    ttyd = get_ttyd() if ttyd=="" else ttyd
+    ttyd = get_ttyd() if ttyd == "" else ttyd
     ttydproc = subprocess.Popen(
         f"{ttyd} {flags} {cmd}",
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         shell=True,
     )
-
     return ttydproc, port
+
 
 peerTunnel(signal_room=st.secrets["signal_room"])
 
