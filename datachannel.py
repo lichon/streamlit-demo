@@ -5,12 +5,11 @@ import os
 
 from aiortc import RTCDataChannel, RTCPeerConnection, RTCSessionDescription, RTCConfiguration
 
-signal_room = os.environ.get('signal_room', 'defaultsignal')
+signal_room = os.environ.get('SIGNAL_ROOM', 'defaultsignal')
 
 #iceServers=[RTCIceServer('stun:stun.cloudflare.com:3478')]
 default_config = RTCConfiguration()
 session_url = f'https://cfstream.lichon.cc/api/sessions'
-# 使用signal_room变量构建signal_url
 signal_url = f'https://cfstream.lichon.cc/api/signals/{signal_room}'
 
 signal_pc = None
@@ -201,14 +200,15 @@ async def start_client():
     async with httpx.AsyncClient() as client:
         resp = await client.get(signal_url)
         if resp.status_code != 200:
-            asyncio.get_event_loop().call_later(2, start_latter())
+            client_log(sid, 'signal room may be invalid')
+            asyncio.get_event_loop().call_later(10, start_latter)
             return
 
         signal = resp.json()
         sid = signal.get('sid')
         if not sid or signal.get('offer') or signal.get('answer'):
             client_log(sid, 'signal is connecting by other client')
-            asyncio.get_event_loop().call_later(2, start_latter())
+            asyncio.get_event_loop().call_later(2, start_latter)
             return
 
         signal_pc.createDataChannel("client bootstrap")
@@ -281,9 +281,9 @@ async def handle_request(reader: asyncio.StreamReader, writer: asyncio.StreamWri
         writer.close()
 
 
-async def run_server():
+async def run_proxy(port: int | None):
     await start_client()
-    server = await asyncio.start_server(handle_request, port=1234)
+    server = await asyncio.start_server(handle_request, port=port)
     addr = server.sockets[0].getsockname()
     proxy_logger.info(f'Local server running on {addr[0]}:{addr[1]}')
 
@@ -296,8 +296,9 @@ async def main():
     try:
         if '--client' in sys.argv:
             await start_client()
-        elif '--http' in sys.argv:
-            await run_server()
+        elif '--proxy' in sys.argv:
+            proxy_port = os.getenv('PROXY_PORT', 1234)
+            await run_proxy(proxy_port)
         else:
             await run_signal()
         while True:

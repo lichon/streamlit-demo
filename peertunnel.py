@@ -19,9 +19,8 @@ class PeerTunnel:
         )
         print("Installing peer dependencies...")
         pip.wait()
-        # 将signal_room作为环境变量传递给子进程
         env = os.environ.copy()
-        env['signal_room'] = signal_room
+        env['SIGNAL_ROOM'] = signal_room
         self.proc = subprocess.Popen(
             f"python datachannel.py {'--debug' if debug else ''}",
             shell=True,
