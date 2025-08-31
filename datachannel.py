@@ -17,6 +17,9 @@ signal_pc = None
 relay_buffer_size = 4096
 client_delay = 30
 
+signal_check_client_offer_times = 0
+signal_check_client_offer_max_times = 3
+
 proxy_logger = logging.getLogger('proxy ')
 relay_logger = logging.getLogger('relay ')
 signal_logger = logging.getLogger('signal')
@@ -140,7 +143,13 @@ async def start_relay_dc(sid: str, offer: str):
 
 
 async def check_client_offer(sid: str):
+    if signal_check_client_offer_times > signal_check_client_offer_max_times:
+        # restart signal process
+        asyncio.get_event_loop().create_task(run_signal())
+        return
+
     relay_log(sid, "checking client offer")
+    signal_check_client_offer_times += 1
     async with httpx.AsyncClient() as client:
         resp = await client.get(signal_url)
         signal = resp.json()
