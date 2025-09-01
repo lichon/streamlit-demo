@@ -46,9 +46,10 @@ def safe_close(writer: asyncio.StreamWriter):
         pass
 
 
-async def safe_drain(writer):
+async def safe_write(writer: asyncio.StreamWriter, data):
     try:
-        if writer:
+        if writer and len(data):
+            writer.write(data)
             await writer.drain()
     except Exception:
         await safe_close(writer)
@@ -282,8 +283,8 @@ async def handle_request(reader: asyncio.StreamReader, writer: asyncio.StreamWri
 
     async def handle_dc_open(dc: RTCDataChannel):
         if is_connect:
-            writer.write(b"HTTP/1.1 200 Connection established\r\n\r\n")
-            asyncio.ensure_future(safe_drain(writer))
+            http200 = b"HTTP/1.1 200 Connection established\r\n\r\n"
+            asyncio.ensure_future(safe_write(writer, http200))
         else:
             dc.send(request_line.encode())
             dc.send(all_headers)
