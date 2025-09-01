@@ -7,10 +7,11 @@ import os
 from aiortc import RTCDataChannel, RTCPeerConnection, RTCSessionDescription, RTCConfiguration
 
 signal_room = os.environ.get('SIGNAL_ROOM', 'defaultsignal')
+signal_base_url = os.environ.get('SIGNAL_BASE_URL', 'http://localhost:8000')
 
 default_config = RTCConfiguration()
 session_url = 'https://cfstream.lichon.cc/api/sessions'
-signal_url = f'https://cfstream.lichon.cc/api/signals/{signal_room}'
+signal_url = f'{signal_base_url}/api/signals/{signal_room}'
 
 signal_pc = None
 relay_buffer_size = 4096

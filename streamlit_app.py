@@ -44,8 +44,11 @@ terminal(cmd="bash", port=1234, auth=st.secrets["ttyd_auth"])
 tty_url = 'http://localhost:1234'
 tty_url = cloudflared(1234).tunnel
 
+api_url = cloudflared(8000).tunnel
+
 iframe(tty_url, height=600)
 
 # info on ttyd port
-st.text(f"ttyd server is running at {tty_url}")
+st.text(f"ttyd server is running at : {tty_url}")
+st.text(f"api  server is running at : {api_url}")
 st.text(f"peer pid {peerTunnel.proc.pid} {'alive' if peerTunnel.is_alive() else 'dead'}")
