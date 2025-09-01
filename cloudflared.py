@@ -52,7 +52,7 @@ class TryCloudflare:
         self,
         port: int | str,
         metrics_port: int | str | None = None,
-        verbose: bool = True,
+        verbose: bool = False,
     ) -> Urls:
         info = get_info()
         info.executable = Path('/tmp') / info.url.split("/")[-1]
