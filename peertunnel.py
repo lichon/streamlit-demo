@@ -14,10 +14,10 @@ class PeerTunnel:
         signal_room: str = 'defaultsignal'
     ) -> None:
         if not self.is_api_alive():
+            self.install_deps()
             self.start_api()
 
         if not self.is_alive():
-            self.install_deps()
             self.start_tunnel()
 
         atexit.register(self.proc.terminate)
