@@ -55,9 +55,12 @@ class PeerTunnel:
 
     def start_api(self) -> None:
         print("Starting api...")
+        env = os.environ.copy()
+        env['PATH'] = f'{env["HOME"]}/.local/bin'
         self.api_proc = subprocess.Popen(
             f"fastapi run signalapi.py",
             shell=True,
+            env=env
         )
 
 
