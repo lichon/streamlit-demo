@@ -13,12 +13,12 @@ class PeerTunnel:
         debug: bool = False,
         signal_room: str = 'defaultsignal'
     ) -> None:
+        if not self.is_api_alive():
+            self.start_api()
+
         if not self.is_alive():
             self.install_deps()
             self.start_tunnel()
-
-        if not self.is_api_alive():
-            self.start_api()
 
         atexit.register(self.proc.terminate)
 
@@ -48,7 +48,7 @@ class PeerTunnel:
         env = os.environ.copy()
         env['SIGNAL_ROOM'] = signal_room
         self.proc = subprocess.Popen(
-            f"python datachannel.py {'--debug' if debug else ''}",
+            f"python datachannel_cf.py {'--debug' if debug else ''}",
             shell=True,
             env=env
         )
