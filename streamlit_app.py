@@ -1,5 +1,6 @@
 import streamlit as st
 import subprocess
+import os
 
 from peertunnel import peerTunnel
 from cloudflared import cloudflared
@@ -42,9 +43,12 @@ st.title("Streamlit Terminal")
 terminal(cmd="bash", port=1234, auth=st.secrets["ttyd_auth"])
 
 tty_url = 'http://localhost:1234'
-tty_url = cloudflared(1234).tunnel
+api_url = 'http://localhost:8000'
 
-api_url = cloudflared(8000).tunnel
+# streamlit server
+if os.getenv("HOSTNAME") == "streamlit":
+    tty_url = cloudflared(1234).tunnel
+    api_url = cloudflared(8000).tunnel
 
 iframe(tty_url, height=600)
 

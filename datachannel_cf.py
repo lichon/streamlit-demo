@@ -635,7 +635,7 @@ async def main():
         if '--client' in sys.argv:
             await start_client()
         elif '--proxy' in sys.argv:
-            proxy_port = os.getenv('PROXY_PORT', 1234)
+            proxy_port = os.getenv('PROXY_PORT', 2234)
             await run_proxy(proxy_port)
         else:
             await run_server()
