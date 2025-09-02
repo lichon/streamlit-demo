@@ -52,7 +52,7 @@ async def safe_write(writer: asyncio.StreamWriter, data):
             writer.write(data)
             await writer.drain()
     except Exception:
-        await safe_close(writer)
+        safe_close(writer)
 
 
 async def safe_write_dc_data(writer: asyncio.StreamWriter, data, dc):
@@ -347,8 +347,8 @@ async def main():
 if __name__ == '__main__':
     import sys
     from aioice import ice
-    ice.CONSENT_INTERVAL = 5
-    ice.CONSENT_FAILURES = 6
+    ice.CONSENT_INTERVAL = 2
+    ice.CONSENT_FAILURES = 5
     client_delay = ice.CONSENT_FAILURES * ice.CONSENT_INTERVAL
     # Setup logging configuration
     debug = '--debug' in sys.argv

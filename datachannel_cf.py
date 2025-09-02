@@ -156,7 +156,7 @@ async def safe_write(writer, data):
             writer.write(data)
             await writer.drain()
     except Exception:
-        await safe_close(writer)
+        safe_close(writer)
 
 
 async def safe_write_close_dc(writer: asyncio.StreamWriter, data, dc: RTCDataChannel):
