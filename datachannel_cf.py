@@ -25,9 +25,6 @@ client_queue: asyncio.Queue = asyncio.Queue()
 relay_buffer_size = 4096
 client_delay = 30
 
-signal_check_client_offer_times = 0
-signal_check_client_offer_max_times = 3
-
 proxy_logger = logging.getLogger('proxy ')
 logger = logging.getLogger('logger')
 
