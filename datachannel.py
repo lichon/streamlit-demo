@@ -48,7 +48,7 @@ def safe_close(writer: asyncio.StreamWriter):
 
 async def safe_write(writer: asyncio.StreamWriter, data):
     try:
-        if writer and len(data):
+        if writer and len(data) and not writer.is_closing():
             writer.write(data)
             await writer.drain()
     except Exception:
