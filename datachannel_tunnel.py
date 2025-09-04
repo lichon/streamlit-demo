@@ -18,90 +18,25 @@ signal_url = f'{signal_base_url}/api/signals/{signal_room}'
 
 DEFAULT_CONFIG = RTCConfiguration()
 RELAY_BUFFER_SIZE = 4096
-TRANSPORT_LABEL = 'transfer'
-RPC_LABLE = 'channel'
+TRANSPORT_LABEL = 'transport'
+RPC_LABLE = 'rpc'
 
 logger = logging.getLogger('logger')
 
 
-def log(sid: str, msg: str):
-    logger.info(msg=f"{sid} {msg}")
-
-
-def safe_close(writer: asyncio.StreamWriter):
-    try:
-        if writer and not writer.is_closing():
-            writer.close()
-    except Exception:
-        pass
-
-
-async def safe_write(writer, data):
-    try:
-        if writer and len(data) and not writer.is_closing():
-            writer.write(data)
-            await writer.drain()
-    except Exception:
-        safe_close(writer)
-
-
-async def create_cf_peer(pc: RTCPeerConnection, on_dc_open=None, on_dc_close=None):
-    if pc:
-        try:
-            await pc.close()
-        except Exception:
-            pass
-
-    pc = RTCPeerConnection(DEFAULT_CONFIG)
-    dc = pc.createDataChannel('bootstrap')
-    sid = None
-
-    @dc.on("open")
-    def on_open():
-        if on_dc_open:
-            on_dc_open(dc, sid)
-
-    @dc.on("close")
-    def on_close():
-        if on_dc_close:
-            on_dc_close(dc, sid)
-
-    @pc.on("connectionstatechange")
-    def on_connection_state():
-        log(sid, f"{pc.connectionState}")
-
-    await pc.setLocalDescription(await pc.createOffer())
-    async with httpx.AsyncClient() as client:
-        resp = await client.post(session_url, content=pc.localDescription.sdp)
-        sid = resp.headers['Location'].split('/')[-1]
-        await pc.setRemoteDescription(RTCSessionDescription(resp.text, 'answer'))
-    return pc
-
-
-async def request_cf_datachannel(pc: RTCPeerConnection, local: str, remote: str = None, label: str = None):
-    channel_id = None
-    channel_label = label or RPC_LABLE
-    config = {
-        'sessionId': remote or local,
-        'location': 'remote' if remote else 'local',
-        'dataChannelName': channel_label,
-    }
-    async with httpx.AsyncClient() as client:
-        resp = await client.patch(f'{session_url}/{local}', json={'dataChannels': [config]}, timeout=30)
-        resp_json = resp.json()
-        dcs = resp_json.get('dataChannels')
-        if dcs and isinstance(dcs, list) and len(dcs) > 0:
-            channel_id = dcs[0].get('id')
-        if channel_id is None:
-            log('', f'dc request res {dcs}')
-
-    return pc.createDataChannel(channel_label, negotiated=True, id=channel_id) if channel_id else None
-
-
+@dataclass
 class TransferData:
     """ relay data with tid send/receive through one channel """
     tid: int
     data: bytes
+
+    @classmethod
+    def from_bytes(cls, data: bytes):
+        pickled = pickle.loads(data)
+        return cls(pickled.tid, pickled.data)
+
+    def to_bytes(self):
+        return pickle.dumps(self)
 
 
 @dataclass
@@ -192,11 +127,30 @@ class DataChannelPair:
 
     def transfer(self, tid, data):
         if self.is_ready():
-            transfer_data = TransferData()
-            transfer_data.tid = tid
-            transfer_data.data = data
-            dumps = pickle.dumps(transfer_data)
+            transfer_data = TransferData(tid, data)
+            dumps = transfer_data.to_bytes()
             self.sender.send(dumps)
+
+
+def log(sid: str, msg: str):
+    logger.info(msg=f"{sid} {msg}")
+
+
+def safe_close(writer: asyncio.StreamWriter):
+    try:
+        if writer and not writer.is_closing():
+            writer.close()
+    except Exception:
+        pass
+
+
+async def safe_write(writer, data):
+    try:
+        if writer and len(data) and not writer.is_closing():
+            writer.write(data)
+            await writer.drain()
+    except Exception:
+        safe_close(writer)
 
 
 async def relay_reader_to_dc(reader: asyncio.StreamReader, pair: DataChannelPair, tid: str):
@@ -211,17 +165,71 @@ async def relay_reader_to_dc(reader: asyncio.StreamReader, pair: DataChannelPair
     log(pair.signal_sid, f'dc {pair.get_label()} relays done {tid}')
 
 
+async def create_cf_peer(pc: RTCPeerConnection, opened=None, closed=None):
+    if pc:
+        try:
+            await pc.close()
+        except Exception:
+            pass
+
+    pc = RTCPeerConnection(DEFAULT_CONFIG)
+    dc = pc.createDataChannel('bootstrap')
+    sid = None
+
+    @dc.on('open')
+    def on_open():
+        if opened:
+            opened(dc, sid)
+
+    @dc.on('close')
+    def on_close():
+        if closed:
+            closed(dc, sid)
+
+    @pc.on('connectionstatechange')
+    def on_connection_state():
+        log(sid, f"{pc.connectionState}")
+
+    await pc.setLocalDescription(await pc.createOffer())
+    async with httpx.AsyncClient() as client:
+        resp = await client.post(session_url, content=pc.localDescription.sdp)
+        sid = resp.headers['Location'].split('/')[-1]
+        await pc.setRemoteDescription(RTCSessionDescription(resp.text, 'answer'))
+    return pc
+
+
+async def request_cf_datachannel(pc: RTCPeerConnection, local: str, remote: str = None, label: str = None):
+    channel_id = None
+    channel_label = label or RPC_LABLE
+    config = {
+        'sessionId': remote or local,
+        'location': 'remote' if remote else 'local',
+        'dataChannelName': channel_label,
+    }
+    async with httpx.AsyncClient() as client:
+        resp = await client.patch(f'{session_url}/{local}', json={'dataChannels': [config]}, timeout=30)
+        resp_json = resp.json()
+        dcs = resp_json.get('dataChannels')
+        if dcs and isinstance(dcs, list) and len(dcs) > 0:
+            channel_id = dcs[0].get('id')
+        if channel_id is None:
+            log('', f'dc request res {dcs}')
+
+    return pc.createDataChannel(channel_label, negotiated=True, id=channel_id) if channel_id else None
+
+
 class DcRelayServer:
     """ data channel relay server """
 
     def __init__(self):
         self.signal_peer: RTCPeerConnection = None
         self.rpc_peer: RTCPeerConnection = None
-        self.data_peer: RTCPeerConnection = None
+        self.p2p_peers = []
 
-    async def _relay_handler(self, transport: DataChannelPair, request: RpcEvent, callback):
+    async def _relay_handler(self, transport: DataChannelPair, request: RpcEvent, callback=None):
         if not transport:
-            callback(RuntimeError('transfer not ready'))
+            if callback:
+                callback(RuntimeError('transfer not ready'))
             return
         try:
             tid = request.tid
@@ -233,18 +241,23 @@ class DcRelayServer:
             def on_message(msg):
                 if isinstance(msg, str):
                     return
-                pickled = pickle.loads(msg)
-                if pickled.tid == tid:
-                    asyncio.ensure_future(safe_write(writer, pickled.data))
+                if tid is None:
+                    asyncio.ensure_future(safe_write(writer, msg))
+                    return
+                tdata = TransferData.from_bytes(msg)
+                if tdata.tid == tid:
+                    asyncio.ensure_future(safe_write(writer, tdata.data))
 
             reader, writer = await asyncio.open_connection(host, port)
-            log(transport.signal_sid, f'dc {tid} connected to {host}:{port}')
+            log(transport.signal_sid, f'dc {transport.get_label()} {tid} connected to {host}:{port}')
             asyncio.ensure_future(relay_reader_to_dc(reader, transport, tid))
-            callback(None)
+            if callback:
+                callback()
         except Exception as e:
-            callback(e)
+            if callback:
+                callback(e)
 
-    async def _create_transport(self, rpc_channel: DataChannelPair, pair_res, callback):
+    async def _create_transport(self, rpc_channel: DataChannelPair, pair_holder, callback):
         try:
             label = TRANSPORT_LABEL
             receiver_req = request_cf_datachannel(self.rpc_peer, rpc_channel.local_sid, rpc_channel.remote_sid, label)
@@ -254,8 +267,35 @@ class DcRelayServer:
             pair = rpc_channel.create_pair(sender, receiver)
             if not pair.is_valid():
                 raise RuntimeError('relay pair init failed')
-            pair_res[0] = pair
-            callback(None)
+            pair_holder[0] = pair
+            callback()
+        except Exception as e:
+            callback(e)
+
+    async def _create_p2p(self, rpc_channel: DataChannelPair, request: RpcEvent, callback):
+        # TODO close p2p peers after server stop
+        try:
+            sid = f'p2p-{rpc_channel.signal_sid}'
+            sdp_text = request.content.replace('a=setup:actpass', 'a=setup:passive')
+
+            pc = RTCPeerConnection(DEFAULT_CONFIG)
+            pc.createDataChannel('bootstrap')
+
+            @pc.on('connectionstatechange')
+            def on_connection_state():
+                log(sid, f"{pc.connectionState}")
+
+            # p2p relay request from client
+            @pc.on('datachannel')
+            def on_datachannel(dc: RTCDataChannel):
+                p2p_transport = DataChannelPair(sid, '', '', dc, dc)
+                relay_request = RpcEvent('relay', dc.label, tid=None)
+                asyncio.create_task(self._relay_handler(p2p_transport, relay_request, None))
+
+            # set local sdp make peer to prepare ice candidates
+            await pc.setLocalDescription(await pc.createOffer())
+            callback(None, pc.localDescription.sdp)
+            await pc.setRemoteDescription(RTCSessionDescription(sdp_text, 'answer'))
         except Exception as e:
             callback(e)
 
@@ -266,27 +306,28 @@ class DcRelayServer:
             log(signal_sid, f'receiver is none')
             return
 
-        label = rpc_channel.get_label()
-        transfer_pair_holder = [None]
+        transport_holder = [None]
 
-        @rpc_channel.receiver.on("message")
+        @rpc_channel.receiver.on('message')
         def on_message(msg):
             if not isinstance(msg, str):
                 return
-            log(signal_sid, f'dc {label} <<< {msg}')
+            log(signal_sid, f'dc {rpc_channel.get_label()} <<< {msg}')
             request = RpcEvent.from_json(msg)
 
-            def send_response(e: Exception = None):
+            def send_response(e: Exception = None, content: str = None):
                 response = RpcEvent(type='ok' if e is None else 'error', tid=request.tid)
-                response.content = f'{e}' if e else None
+                response.content = f'{e}' if e else content
                 resp_json = response.to_json()
-                log(signal_sid, f'dc {label} >>> {resp_json}')
+                log(signal_sid, f'dc {rpc_channel.get_label()} >>> {resp_json}')
                 rpc_channel.send(resp_json)
 
             if request.type == 'relay':
-                asyncio.create_task(self._relay_handler(transfer_pair_holder[0], request, send_response))
-            elif request.type == 'transfer':
-                asyncio.create_task(self._create_transport(rpc_channel, transfer_pair_holder, send_response))
+                asyncio.create_task(self._relay_handler(transport_holder[0], request, send_response))
+            elif request.type == 'p2p':
+                asyncio.create_task(self._create_p2p(rpc_channel, request, send_response))
+            elif request.type == 'transport':
+                asyncio.create_task(self._create_transport(rpc_channel, transport_holder, send_response))
             elif request.type == 'ping':
                 send_response()
                 # update signal connection
@@ -360,8 +401,8 @@ class DcRelayServer:
             await self.signal_peer.close()
         if self.rpc_peer:
             await self.rpc_peer.close()
-        if self.data_peer:
-            await self.data_peer.close()
+        if len(self.p2p_peers):
+            asyncio.gather(*[peer.close() for peer in self.p2p_peers])
 
 
 class DcRelayClient:
@@ -374,7 +415,7 @@ class DcRelayClient:
         self._queue: asyncio.Queue = asyncio.Queue()
         self.signal_sid: str = None
         self.rpc_peer: RTCPeerConnection = None
-        self.data_peer: RTCPeerConnection = None
+        self.p2p_peer: RTCPeerConnection = None
 
     def _restart(self):
         asyncio.ensure_future(self.start())
@@ -463,8 +504,43 @@ class DcRelayClient:
             return
         req.future.set_result(transport)
 
-    async def _p2p_request(self, channel_pair: DataChannelPair, transfer: DataChannelPair, req: RpcEvent):
-        pass
+    async def _p2p_request(self, rpc_channel: DataChannelPair, req: RpcEvent):
+        if self.p2p_peer is None:
+            pc = RTCPeerConnection(DEFAULT_CONFIG)
+            p2p_dc = pc.createDataChannel(req.content)
+            sid = f'p2p-{rpc_channel.signal_sid}'
+
+            @pc.on('connectionstatechange')
+            def on_connection_state():
+                log(sid, f"{pc.connectionState}")
+                if pc.connectionState in ['failed', 'closed']:
+                    self.p2p_peer = None
+                    req.future.set_result(None)
+
+            @p2p_dc.on('open')
+            def on_p2p_open(dc: RTCDataChannel):
+                log(sid, f"{dc.label} p2p open")
+                self.p2p_peer = pc
+                p2p = DataChannelPair(sid, '', '', dc, dc)
+                req.future.set_result(p2p)
+
+            # set local sdp make peer to prepare ice candidates
+            await pc.setLocalDescription(await pc.createOffer())
+            resp = await self._send_rpc(rpc_channel, RpcEvent('p2p', pc.localDescription.sdp))
+            if not resp or resp.type != 'ok':
+                req.future.set_result(None)
+                return
+
+            answer = resp.content.replace('a=setup:actpass', 'a=setup:passive')
+            await pc.setRemoteDescription(RTCSessionDescription(answer, 'answer'))
+        else:
+            p2p_dc = self.p2p_peer.createDataChannel(req.content)
+
+            @p2p_dc.on('open')
+            def on_p2p_open(dc: RTCDataChannel):
+                log(sid, f"{dc.label} p2p open")
+                p2p = DataChannelPair(sid, '', '', dc, dc)
+                req.future.set_result(p2p)
 
     async def _event_loop(self, local_sid, remote_sid):
         try:
@@ -500,10 +576,10 @@ class DcRelayClient:
             event: RpcEvent
             while rpc_channel.is_ready():
                 event = await self._queue.get()
-                if event.type == 'relay':
+                if event.type == 'p2p':
+                    asyncio.create_task(self._p2p_request(rpc_channel, event))
+                elif event.type == 'relay':
                     asyncio.create_task(self._relay_request(rpc_channel, transport, event))
-                elif event.type == 'p2p':
-                    asyncio.create_task(self._p2p_request(rpc_channel, transport, event))
 
             log(self.signal_sid, f'client eventloop exit')
         except Exception as e:
@@ -551,8 +627,8 @@ class DcRelayClient:
     async def stop(self):
         if self.rpc_peer:
             await self.rpc_peer.close()
-        if self.data_peer:
-            await self.data_peer.close()
+        if self.p2p_peer:
+            await self.p2p_peer.close()
 
 
 class HttpServer:
@@ -601,12 +677,12 @@ class HttpServer:
             # localhost test,
             tid = client_peername[1]
             # get dc pair
-            transport: DataChannelPair = await self.endpoint.enqueue(RpcEvent('relay', netloc, tid=tid))
+            transport: DataChannelPair = await self.endpoint.enqueue(RpcEvent('p2p', netloc, tid=tid))
             if not transport or not transport.is_ready():
                 reject()
                 return
 
-            @transport.receiver.on("message")
+            @transport.receiver.on('message')
             def on_message(msg):
                 if isinstance(msg, str):
                     return
