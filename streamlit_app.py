@@ -48,7 +48,7 @@ api_url = 'http://localhost:8000'
 # streamlit server
 if os.getenv("HOSTNAME") == "streamlit":
     tty_url = cloudflared(1234).tunnel
-    api_url = cloudflared(8000).tunnel
+    api_url = cloudflared(8000, update_dns=True, secrects=st.secrets).tunnel
 
 iframe(tty_url, height=600)
 

@@ -48,7 +48,7 @@ class PeerTunnel:
         env = os.environ.copy()
         env['SIGNAL_ROOM'] = signal_room
         self.proc = subprocess.Popen(
-            f"python datachannel_cf.py {'--debug' if debug else ''}",
+            f"python datachannel_tunnel.py {'--debug' if debug else ''}",
             shell=True,
             env=env
         )

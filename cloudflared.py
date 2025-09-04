@@ -44,6 +44,16 @@ def download(info: Info | None = None) -> str:
     return str(excutable)
 
 
+async def patch_dns(api_url, key: str, target: str) -> None:
+    import httpx
+    async with httpx.AsyncClient() as client:
+        await client.patch(
+            f'{api_url}',
+            json={"content": target},
+            headers={"Authorization": f"Bearer {key}"}
+        )
+
+
 class TryCloudflare:
     def __init__(self):
         self.running: dict[int, Urls] = {}
@@ -53,6 +63,8 @@ class TryCloudflare:
         port: int | str,
         metrics_port: int | str | None = None,
         verbose: bool = False,
+        update_dns: bool = False,
+        secrects: dict = None,
     ) -> Urls:
         info = get_info()
         info.executable = Path('/tmp') / info.url.split("/")[-1]
@@ -115,6 +127,8 @@ class TryCloudflare:
             self._print(urls.tunnel, urls.metrics)
 
         self.running[port] = urls
+        if update_dns:
+            patch_dns(secrects['dns_api_url'], secrects['dns_api_key'], tunnel_url)
         return urls
 
     @staticmethod
