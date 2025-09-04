@@ -131,7 +131,9 @@ class TryCloudflare:
         self.running[port] = urls
         if update_dns:
             import asyncio
-            asyncio.create_task(patch_dns(secrects['dns_api_url'], secrects['dns_api_key'], tunnel_url))
+            asyncio.ensure_future(
+                patch_dns(secrects['dns_api_url'], secrects['dns_api_key'], tunnel_url)
+            )
         return urls
 
     @staticmethod
