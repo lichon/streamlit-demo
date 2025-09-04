@@ -46,12 +46,14 @@ def download(info: Info | None = None) -> str:
 
 async def patch_dns(api_url, key: str, target: str) -> None:
     import httpx
+    fqdn = target.replace("https://", "")
     async with httpx.AsyncClient() as client:
         await client.patch(
             f'{api_url}',
-            json={"content": target},
+            json={"content": fqdn},
             headers={"Authorization": f"Bearer {key}"}
         )
+        print(f'DNS updated to {fqdn}')
 
 
 class TryCloudflare:
