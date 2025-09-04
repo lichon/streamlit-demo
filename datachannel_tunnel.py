@@ -153,6 +153,18 @@ async def safe_write(writer, data):
         safe_close(writer)
 
 
+async def safe_write_buffers(writer, buffers: list):
+    if not writer or writer.is_closing():
+        return
+    try:
+        for b in buffers:
+            writer.write(b)
+        await writer.drain()
+        buffers.clear()
+    except Exception:
+        safe_close(writer)
+
+
 async def relay_reader_to_dc(reader: asyncio.StreamReader, pair: DataChannelPair, tid: str):
     while not reader.at_eof():
         if (pair.sender.bufferedAmount > RELAY_BUFFER_SIZE * 100):
@@ -161,7 +173,10 @@ async def relay_reader_to_dc(reader: asyncio.StreamReader, pair: DataChannelPair
         data = await reader.read(RELAY_BUFFER_SIZE)
         if not data:
             break
-        pair.transfer(tid, data)
+        if tid:
+            pair.transfer(tid, data)
+        else:
+            pair.send(data)
     log(pair.signal_sid, f'dc {pair.get_label()} relays done {tid}')
 
 
@@ -237,19 +252,27 @@ class DcRelayServer:
             if not host or not port:
                 raise RuntimeError('invalid label')
 
+            writer = None
+            buffers = []
+
             @transport.receiver.on('message')
             def on_message(msg):
                 if isinstance(msg, str):
                     return
                 if tid is None:
-                    asyncio.ensure_future(safe_write(writer, msg))
+                    if writer is None:
+                        buffers.append(msg)
+                    else:
+                        asyncio.ensure_future(safe_write(writer, msg))
                     return
                 tdata = TransferData.from_bytes(msg)
                 if tdata.tid == tid:
                     asyncio.ensure_future(safe_write(writer, tdata.data))
 
             reader, writer = await asyncio.open_connection(host, port)
-            log(transport.signal_sid, f'dc {transport.get_label()} {tid} connected to {host}:{port}')
+            log(transport.signal_sid, f'dc {transport.get_label()} connected to {host}:{port} {tid if tid else ""}')
+
+            await safe_write_buffers(writer, buffers)
             asyncio.ensure_future(relay_reader_to_dc(reader, transport, tid))
             if callback:
                 callback()
@@ -426,7 +449,8 @@ class DcRelayClient:
 
         if not rpc_channel.is_ready():
             log(self.signal_sid, f"dc channel is not ready")
-            raise Exception("dc channel closed")
+            request.future.set_exception(Exception("dc channel closed"))
+            return
 
         sender, receiver = rpc_channel.get_pair()
         rpc_future = asyncio.Future()
@@ -505,24 +529,22 @@ class DcRelayClient:
         req.future.set_result(transport)
 
     async def _p2p_request(self, rpc_channel: DataChannelPair, req: RpcEvent):
+        sid = f'p2p-{rpc_channel.signal_sid}'
         if self.p2p_peer is None:
             pc = RTCPeerConnection(DEFAULT_CONFIG)
-            p2p_dc = pc.createDataChannel(req.content)
-            sid = f'p2p-{rpc_channel.signal_sid}'
+            dc = pc.createDataChannel(req.content)
 
             @pc.on('connectionstatechange')
             def on_connection_state():
                 log(sid, f"{pc.connectionState}")
+                self.p2p_peer = pc if pc.connectionState == 'connected' else None
                 if pc.connectionState in ['failed', 'closed']:
-                    self.p2p_peer = None
                     req.future.set_result(None)
 
-            @p2p_dc.on('open')
-            def on_p2p_open(dc: RTCDataChannel):
-                log(sid, f"{dc.label} p2p open")
-                self.p2p_peer = pc
-                p2p = DataChannelPair(sid, '', '', dc, dc)
-                req.future.set_result(p2p)
+            @dc.on('open')
+            def on_p2p_open():
+                log(sid, f"dc {dc.label} p2p open")
+                req.future.set_result(DataChannelPair(sid, '', '', dc, dc))
 
             # set local sdp make peer to prepare ice candidates
             await pc.setLocalDescription(await pc.createOffer())
@@ -531,16 +553,15 @@ class DcRelayClient:
                 req.future.set_result(None)
                 return
 
-            answer = resp.content.replace('a=setup:actpass', 'a=setup:passive')
+            answer = resp.content.replace('a=setup:actpass', 'a=setup:active')
             await pc.setRemoteDescription(RTCSessionDescription(answer, 'answer'))
         else:
-            p2p_dc = self.p2p_peer.createDataChannel(req.content)
+            dc = self.p2p_peer.createDataChannel(req.content)
 
-            @p2p_dc.on('open')
-            def on_p2p_open(dc: RTCDataChannel):
-                log(sid, f"{dc.label} p2p open")
-                p2p = DataChannelPair(sid, '', '', dc, dc)
-                req.future.set_result(p2p)
+            @dc.on('open')
+            def on_p2p_open():
+                log(sid, f"dc {dc.label} p2p open")
+                req.future.set_result(DataChannelPair(sid, '', '', dc, dc))
 
     async def _event_loop(self, local_sid, remote_sid):
         try:
@@ -614,7 +635,7 @@ class DcRelayClient:
 
             self.signal_sid = sid
 
-            def on_open(dc, _):
+            def on_open(dc: RTCDataChannel, _):
                 # close bootstrap dc to release dc stream id
                 dc.close()
 
@@ -667,17 +688,21 @@ class HttpServer:
             if is_connect:
                 http200 = b"HTTP/1.1 200 Connection established\r\n\r\n"
                 asyncio.ensure_future(safe_write(writer, http200))
-            else:
+            elif tid:
                 transport.transfer(tid, request_line.encode())
                 transport.transfer(tid, all_headers)
+            else:
+                transport.send(request_line.encode())
+                transport.send(all_headers)
             await relay_reader_to_dc(reader, transport, tid)
 
         # request new dc
         if self.endpoint and self.endpoint.connected():
-            # localhost test,
-            tid = client_peername[1]
-            # get dc pair
-            transport: DataChannelPair = await self.endpoint.enqueue(RpcEvent('p2p', netloc, tid=tid))
+            # use client port for transaction id
+            # request_type = 'p2p'
+            request_type = 'relay'
+            tid = None if request_type == 'p2p' else client_peername[1]
+            transport: DataChannelPair = await self.endpoint.enqueue(RpcEvent(request_type, netloc, tid=tid))
             if not transport or not transport.is_ready():
                 reject()
                 return
@@ -686,9 +711,12 @@ class HttpServer:
             def on_message(msg):
                 if isinstance(msg, str):
                     return
-                pickled = pickle.loads(msg)
-                if tid == pickled.tid:
-                    asyncio.ensure_future(safe_write(writer, pickled.data))
+                if request_type == 'p2p':
+                    asyncio.ensure_future(safe_write(writer, msg))
+                    return
+                trans_data = TransferData.from_bytes(msg)
+                if tid == trans_data.tid:
+                    asyncio.ensure_future(safe_write(writer, trans_data.data))
 
             await handle_dc_open(transport, tid)
         else:
