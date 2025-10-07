@@ -66,7 +66,7 @@ class TryCloudflare:
         metrics_port: int | str | None = None,
         verbose: bool = False,
         update_dns: bool = False,
-        secrects: dict = None,
+        secrets: dict = None,
     ) -> Urls:
         info = get_info()
         info.executable = Path('/tmp') / info.url.split("/")[-1]
@@ -132,7 +132,7 @@ class TryCloudflare:
         if update_dns:
             import asyncio
             asyncio.run(
-                patch_dns(secrects['dns_api_url'], secrects['dns_api_key'], tunnel_url)
+                patch_dns(secrets['dns_api_url'], secrets['dns_api_key'], tunnel_url)
             )
         return urls
 
