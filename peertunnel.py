@@ -9,12 +9,12 @@ class PeerTunnel:
 
     def __call__(
         self,
-        secrects: dict = None,
+        secrets: dict = None,
     ) -> None:
         if not self.is_alive():
-            signal_room = secrects["signal_room"]
-            sb_url = secrects["sb_url"]
-            sb_key = secrects["sb_key"]
+            signal_room = secrets["signal_room"]
+            sb_url = secrets["sb_url"]
+            sb_key = secrets["sb_key"]
             self.start_tunnel(signal_room, sb_url, sb_key)
 
         atexit.register(self.proc.terminate)
