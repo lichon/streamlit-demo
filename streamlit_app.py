@@ -35,24 +35,28 @@ def terminal(
     return ttydproc, port
 
 
-peerTunnel(signal_room=st.secrets["signal_room"])
 
-st.title("Streamlit Terminal")
+# start the peer tunnel
+peerTunnel(secrets=st.secrets)
 
 # start the ttyd server
 terminal(cmd="bash", port=1234, auth=st.secrets["ttyd_auth"])
 
 tty_url = 'http://localhost:1234'
-api_url = 'http://localhost:8000'
+peer_url = 'http://localhost:2234'
 
 # streamlit server
 if os.getenv("HOSTNAME") == "streamlit":
+    # set dns for cloudflared
     tty_url = cloudflared(1234).tunnel
-    api_url = cloudflared(8000, update_dns=True, secrects=st.secrets).tunnel
+    peer_url = cloudflared(2234, update_dns=True, secrets=st.secrets).tunnel
 
-iframe(tty_url, height=600)
 
+# header
+st.text("Streamlit Terminal")
+# embed ttyd
+iframe(tty_url, height=700)
 # info on ttyd port
 st.text(f"ttyd server is running at : {tty_url}")
-st.text(f"api  server is running at : {api_url}")
+st.text(f"peer server is running at : {peer_url}")
 st.text(f"peer pid {peerTunnel.proc.pid} {'alive' if peerTunnel.is_alive() else 'dead'}")

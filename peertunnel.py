@@ -6,19 +6,16 @@ import os
 class PeerTunnel:
     def __init__(self):
         self.proc: subprocess.Popen | None = None
-        self.api_proc: subprocess.Popen = None
 
     def __call__(
         self,
-        signal_room: str = 'defaultsignal',
-        debug: bool = False,
+        secrects: dict = None,
     ) -> None:
-        if not self.is_api_alive():
-            self.install_deps()
-            self.start_api()
-
         if not self.is_alive():
-            self.start_tunnel(signal_room, debug)
+            signal_room = secrects["signal_room"]
+            sb_url = secrects["sb_url"]
+            sb_key = secrects["sb_key"]
+            self.start_tunnel(signal_room, sb_url, sb_key)
 
         atexit.register(self.proc.terminate)
 
@@ -32,9 +29,6 @@ class PeerTunnel:
     def is_alive(self) -> bool:
         return self.proc and self.proc.poll() is None
 
-    def is_api_alive(self) -> bool:
-        return self.api_proc and self.api_proc.poll() is None
-
     def install_deps(sefl) -> None:
         pip = subprocess.Popen(
             f"pip install -r peer_requirements.txt",
@@ -43,22 +37,14 @@ class PeerTunnel:
         print("Installing peer dependencies...")
         pip.wait()
 
-    def start_tunnel(self, signal_room: str, debug: bool) -> None:
+    def start_tunnel(self, signal_room: str, url: str, key: str) -> None:
         print("Starting PeerTunnel...")
         env = os.environ.copy()
         env['SIGNAL_ROOM'] = signal_room
+        env['SUPABASE_URL'] = url
+        env['SUPABASE_KEY'] = key
         self.proc = subprocess.Popen(
-            f"python datachannel_tunnel.py {'--debug' if debug else ''}",
-            shell=True,
-            env=env
-        )
-
-    def start_api(self) -> None:
-        print("Starting api...")
-        env = os.environ.copy()
-        env['PATH'] = f'{env["HOME"]}/.local/bin'
-        self.api_proc = subprocess.Popen(
-            f"fastapi run signalapi.py",
+            f"python datachannel_sb.py",
             shell=True,
             env=env
         )
