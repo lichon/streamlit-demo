@@ -12,6 +12,7 @@ class PeerTunnel:
         secrets: dict = None,
     ) -> None:
         if not self.is_alive():
+            self.install_deps()
             signal_room = secrets["signal_room"]
             sb_url = secrets["sb_url"]
             sb_key = secrets["sb_key"]
