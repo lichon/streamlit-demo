@@ -43,22 +43,24 @@ class TransferData:
 
 @dataclass
 class LocalRequest:
+    ''' request send to event loop '''
+
+    tid: str = str(uuid.uuid1())
+    "transaction id"
+
     type: str
     "The type of the event"
 
     content: Optional[str] = None
     "anything"
 
-    tid: str = str(uuid.uuid1())
-    "transaction id"
-
     future: Optional[asyncio.Future] = None
 
     def asdict(self) -> dict:
         return {
+            'tid': self.tid,
             'type': self.type,
             'content': self.content,
-            'tid': self.tid,
         }
 
     def to_json(self) -> str:
@@ -75,14 +77,19 @@ class LocalRequest:
 @dataclass
 class ChannelMessage:
     ''' message over supabase realtime '''
+
     id: Optional[str] = None
     'sender id, auto increment'
+
     type: Optional[str] = None
     'message type'
+
     content: Optional[dict] = None
     'message content'
+
     timestamp: Optional[str] = None
     'message timestamp'
+
     sender: Optional[str] = None
     'sender display name'
 
@@ -105,7 +112,7 @@ class ChannelCommand:
     method: Optional[str] = None
     'rpc method name, none for response'
 
-    content: Optional[str] = None
+    body: Optional[str] = None
     'rpc request/response content'
 
     error: Optional[str] = None
@@ -118,7 +125,7 @@ class ChannelCommand:
         self_dict = {
             'tid': self.tid,
             'method': self.method,
-            'content': self.content,
+            'body': self.body,
             'error': self.error,
         }
         return {k: v for k, v in self_dict.items() if v is not None}
@@ -361,17 +368,17 @@ class RealtimePeer:
             p2p_transport = DataChannelPair.new_p2p(req.tid, dc)
             asyncio.create_task(self.relay_server_handler(p2p_transport, dc.label))
 
-        res = ChannelCommand(req.tid, content={
+        res = ChannelCommand(req.tid, body={
             'ice': [],
             'answer': pc.localDescription.sdp.replace('a=setup:actpass', 'a=setup:active')
         })
         await pc.setRemoteDescription(RTCSessionDescription(
-            req.content['offer'].replace('a=setup:actpass', 'a=setup:passive'), 'answer'))
+            req.body['offer'].replace('a=setup:actpass', 'a=setup:passive'), 'answer'))
         return res
 
     async def _handle_incoming_request(self, req: ChannelCommand):
         if req.method == 'ping':
-            self._send_channel_command(ChannelCommand(req.tid, content='pong'))
+            self._send_channel_command(ChannelCommand(req.tid, body='pong'))
         elif req.method == 'connect':
             # TODO handle new peer request in random delay
             res = await self.handle_p2p_connect(req)
@@ -455,7 +462,7 @@ class RealtimePeer:
 
         # create new peer connection
         peer = await self.create_peer(tid, opened=on_open, closed=on_close)
-        res = await self.channel_request(ChannelCommand(tid=tid, method='connect', content={
+        res = await self.channel_request(ChannelCommand(tid=tid, method='connect', body={
             'offer': peer.localDescription.sdp, 'ice': []
         }))
 
@@ -469,16 +476,16 @@ class RealtimePeer:
             await safe_close_peer(peer)
             return
 
-        if not res.content or 'answer' not in res.content:
+        if not res.body or 'answer' not in res.body:
             req.future.set_exception(Exception('invalid response'))
             await safe_close_peer(peer)
             return
 
-        await peer.setRemoteDescription(RTCSessionDescription(res.content['answer'], 'answer'))
+        await peer.setRemoteDescription(RTCSessionDescription(res.body['answer'], 'answer'))
 
     async def _ping_test(self, req: LocalRequest):
         res = await self.channel_request(ChannelCommand(method='ping'), 10)
-        req.future.set_result(res.content if res else 'no response')
+        req.future.set_result(res.body if res else 'no response')
         log(self.signal_sid, f'ping test result {res}')
 
     async def _event_loop(self):
