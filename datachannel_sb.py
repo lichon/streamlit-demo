@@ -567,7 +567,10 @@ class HttpServer:
             netloc = f'{url.netloc}:{url.port or 80}'
 
             if method == 'GET':
-                writer.write(b'HTTP/1.1 400 Bad Request\r\n\r\n')
+                if self.endpoint.connected():
+                    writer.write(b'HTTP/1.1 200 OK\r\n\r\n')
+                else:
+                    writer.write(b'HTTP/1.1 400 Bad Request\r\n\r\n')
                 safe_close(writer)
                 return
 
