@@ -52,8 +52,7 @@ if os.getenv("HOSTNAME") == "streamlit":
     peer_url = cloudflared(2234, update_dns=True, secrets=st.secrets).tunnel
 
 
-# header
-st.text("Streamlit Terminal")
+st.set_page_config(page_title="Streamlit Terminal", layout="wide")
 # embed ttyd
 iframe(tty_url, height=700)
 # info on ttyd port
