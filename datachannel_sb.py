@@ -566,7 +566,7 @@ class HttpServer:
             url = urllib.parse.urlparse(netloc)
             netloc = f'{url.netloc}:{url.port or 80}'
 
-            if method == 'PING':
+            if method == 'PING' or method == 'DELETE':
                 await self.endpoint.do_request(LocalRequest('ping'))
                 writer.write(b'HTTP/1.1 200 OK\r\n\r\n')
                 safe_close(writer)
@@ -610,6 +610,7 @@ class HttpServer:
 
             await handle_dc_open(transport, None)
         else:
+            self.logger.info(f'endpoint not ready {netloc}')
             reject()
 
     async def start(self, port: int = 1234):
