@@ -219,8 +219,8 @@ class DataChannelPair:
             self.sender.send(dumps)
 
 
-def log(sid: str, msg: str):
-    logger.info(msg=f'{sid} {msg}')
+def log(trace_id: str, msg: str):
+    logger.info(msg=f'{trace_id} {msg}')
 
 
 async def safe_close_peer(pc: RTCPeerConnection):
@@ -285,7 +285,7 @@ class RealtimePeer:
     def __init__(self):
         self._queue: asyncio.Queue = asyncio.Queue()
         self._outgoing_requests: dict[str, ChannelCommand] = {}
-        self.signal_sid: str = None
+        self.peer_id: str = None
         self.client: AsyncClient = None
         self.channel: AsyncRealtimeChannel = None
         self.peers: dict[str, RTCPeerConnection] = {}
@@ -346,6 +346,7 @@ class RealtimePeer:
             if closed:
                 closed()
 
+        log(tid, f'create new peer {tid}')
         self.peers[tid] = pc = RTCPeerConnection(DEFAULT_CONFIG)
 
         @pc.on('connectionstatechange')
@@ -353,6 +354,8 @@ class RealtimePeer:
             log(tid, f'{pc.connectionState}')
             if pc.connectionState == 'failed':
                 asyncio.ensure_future(safe_close_peer(pc))
+            elif pc.connectionState == 'closed':
+                self.peers.pop(tid, None)
 
         dc = pc.createDataChannel('bootstrap')
         dc.once('open', on_open)
@@ -384,15 +387,17 @@ class RealtimePeer:
             res = await self.handle_p2p_connect(req)
             self._send_channel_command(res)
 
-    def _on_channel_command(self, msg):
+    def _recv_channel_command(self, msg):
+        log(self.peer_id, f'channel recv {msg}')
         try:
             channelMessage = ChannelMessage.fromdict(msg['payload'])
-            if self.signal_sid == channelMessage.id:
+            if self.peer_id == channelMessage.id:
+                # command from self, ignore
                 return
 
             cmd: ChannelCommand = ChannelCommand.fromdict(channelMessage.content)
             if not cmd.tid:
-                log(self.signal_sid, f'invalid command no tid {cmd}')
+                log(self.peer_id, f'invalid command no tid {cmd}')
                 return
 
             log(cmd.tid, f'recv command {cmd}')
@@ -406,7 +411,7 @@ class RealtimePeer:
             # handle incoming request
             asyncio.ensure_future(self._handle_incoming_request(cmd))
         except Exception as e:
-            log(self.signal_sid, f'handle incoming message error {e}')
+            log(self.peer_id, f'handle incoming message error {e}')
 
     def _send_channel_command(self, req: ChannelCommand, timeout: int = 30):
         if req is None:
@@ -415,7 +420,7 @@ class RealtimePeer:
             req.future.set_exception(Exception('channel not ready'))
             return
 
-        msg = ChannelMessage(self.signal_sid, 'command', req.asdict(), str(time.time()))
+        msg = ChannelMessage(self.peer_id, 'command', req.asdict(), str(time.time()))
         asyncio.ensure_future(self.channel.send_broadcast('command', msg.asdict()))
 
     async def channel_request(self, req: ChannelCommand, timeout: int = 30) -> ChannelCommand:
@@ -429,14 +434,12 @@ class RealtimePeer:
             await asyncio.wait_for(req.future, timeout)
             return req.future.result()
         except Exception as e:
-            log(self.signal_sid, f'channel request error {e.__class__.__name__} {e}')
-            if req.future.exception() is None:
-                req.future.set_exception(Exception('timeout'))
+            log(self.peer_id, f'channel request error {e.__class__.__name__} {e}')
             return None
         finally:
             self._outgoing_requests.pop(req.tid, None)
 
-    async def _create_p2p_transport(self, req: LocalRequest):
+    async def create_p2p_transport(self, req: LocalRequest):
         tid = req.tid
 
         def on_open():
@@ -456,8 +459,9 @@ class RealtimePeer:
             on_open()
             return
 
-        if self.peers.get(tid, None):
-            req.future.set_exception(Exception('peer connecting'))
+        peer: RTCPeerConnection = self.peers.get(tid, None)
+        if peer:
+            req.future.set_exception(Exception(f'peer state {peer.connectionState}'))
             return
 
         # create new peer connection
@@ -468,16 +472,19 @@ class RealtimePeer:
 
         if not res:
             req.future.set_result(None)
+            log(self.peer_id, f'channel request had no response, close peer')
             await safe_close_peer(peer)
             return
 
         if res.error:
             req.future.set_exception(Exception(res.error))
+            log(self.peer_id, f'channel request error {res.error}, close peer')
             await safe_close_peer(peer)
             return
 
         if not res.body or 'answer' not in res.body:
             req.future.set_exception(Exception('invalid response'))
+            log(self.peer_id, f'channel request had invalid response, close peer')
             await safe_close_peer(peer)
             return
 
@@ -486,51 +493,53 @@ class RealtimePeer:
     async def _ping_test(self, req: LocalRequest):
         res = await self.channel_request(ChannelCommand(method='ping'), 10)
         req.future.set_result(res.body if res else 'no response')
-        log(self.signal_sid, f'ping test result {res}')
+        log(self.peer_id, f'ping test result {res}')
 
     async def _event_loop(self):
-        log(self.signal_sid, f'eventloop start')
+        log(self.peer_id, f'eventloop start')
         try:
             req: LocalRequest
             while True:
                 req = await self._queue.get()
                 if req.type == 'transport':
-                    asyncio.create_task(self._create_p2p_transport(req))
+                    asyncio.create_task(self.create_p2p_transport(req))
                 elif req.type == 'ping':
                     asyncio.create_task(self._ping_test(req))
                 elif req.type == 'close':
                     break
-            log(self.signal_sid, f'eventloop exit')
+            log(self.peer_id, f'eventloop exit')
         except Exception as e:
-            log(self.signal_sid, f'loop error: {e}')
+            log(self.peer_id, f'eventloop error: {e}')
 
-    async def do_request(self, request: LocalRequest):
+    async def do_request(self, request: LocalRequest, timeout: int = 60):
         request.future = asyncio.Future()
         self._queue.put_nowait(request)
         try:
-            await request.future
+            await asyncio.wait_for(request.future, timeout)
             res = request.future.result()
             return res
         except Exception as e:
-            log(self.signal_sid, f'{request.type} request error {e}')
+            log(self.peer_id, f'{request} error {e.__class__.__name__} {e}')
             return None
 
     def connected(self):
         return self.channel and self.channel.state == 'joined'
 
     async def start(self):
-        self.signal_sid = str(uuid.uuid1())
+        self.peer_id = str(uuid.uuid1())
         self.client = await acreate_client(supabase_url, supabase_key)
-        self.channel = self.client.realtime.channel(f'room:{signal_room}:messages')
-        self.channel.on_broadcast('command', self._on_channel_command)
+        self.channel = self.client.channel(f'room:{signal_room}:messages')
+        self.channel.on_broadcast('command', self._recv_channel_command)
         await self.channel.subscribe()
+        await self.channel.track({
+            'id': self.peer_id,
+            'name': 'RealtimePeer',
+        })
         asyncio.create_task(self._event_loop())
 
     async def stop(self):
         self._queue.put_nowait(LocalRequest('close'))
-        if (self.channel):
-            self.client.remove_channel(self.channel)
-            self.channel = None
+        self.client.remove_all_channels()
         if len(self.peers):
             asyncio.gather(*[peer.close() for peer in self.peers.values()])
 
@@ -540,7 +549,6 @@ class HttpServer:
     def __init__(self, endpoint: RealtimePeer):
         self.logger = logging.getLogger('proxy')
         self.endpoint = endpoint
-        self.server_id = str(uuid.uuid1())
 
     async def handle_request(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
         try:
@@ -586,7 +594,8 @@ class HttpServer:
 
         # request new dc
         if self.endpoint and self.endpoint.connected():
-            tid = self.server_id
+            tid = self.endpoint.peer_id
+            # use peer id as transport id, reuse existing peer connection
             transport: DataChannelPair = await self.endpoint.do_request(LocalRequest('transport', netloc, tid))
             if not transport or not transport.is_ready():
                 self.logger.info(f'transport {transport} not ready {netloc}')
