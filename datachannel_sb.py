@@ -568,8 +568,10 @@ class HttpServer:
 
             if method == 'GET':
                 if self.endpoint.connected():
+                    self.logger.info(f'endpoint connected')
                     writer.write(b'HTTP/1.1 200 OK\r\n\r\n')
                 else:
+                    self.logger.info(f'endpoint not connected')
                     writer.write(b'HTTP/1.1 400 Bad Request\r\n\r\n')
                 safe_close(writer)
                 return
