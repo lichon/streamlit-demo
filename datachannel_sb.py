@@ -13,7 +13,7 @@ from aiortc import RTCDataChannel, RTCPeerConnection, RTCSessionDescription, RTC
 from supabase import acreate_client, AsyncClient
 from realtime import AsyncRealtimeChannel
 
-signal_room = os.environ.get('SIGNAL_ROOM', 'default')
+signal_room = os.environ.get('SIGNAL_ROOM', 'fd1e313f-cea1-408a-b1f2-13379d256876')
 supabase_key = os.environ.get('SUPABASE_KEY', '')
 supabase_url = os.environ.get('SUPABASE_URL', '')
 
@@ -45,14 +45,14 @@ class TransferData:
 class LocalRequest:
     ''' request send to event loop '''
 
-    tid: str = str(uuid.uuid1())
-    "transaction id"
-
-    type: str
+    type: str = None
     "The type of the event"
 
     content: Optional[str] = None
     "anything"
+
+    tid: str = str(uuid.uuid1())
+    "transaction id"
 
     future: Optional[asyncio.Future] = None
 
