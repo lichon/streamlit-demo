@@ -560,20 +560,24 @@ class HttpServer:
 
         self.logger.info(f'received {method} {netloc}')
         # client_peername = writer.get_extra_info('peername')
+        if method == 'GET' and netloc == '/':
+            if self.endpoint.connected():
+                self.logger.info(f'endpoint connected')
+                writer.write(b'HTTP/1.1 200 OK\r\n\r\n')
+            else:
+                self.logger.info(f'endpoint not connected')
+                writer.write(b'HTTP/1.1 400 Bad Request\r\n\r\n')
+            safe_close(writer)
+            return
+
         # https proxy only
         if method != 'CONNECT':
-            url = urllib.parse.urlparse(netloc)
-            netloc = f'{url.netloc}:{url.port or 80}'
-
-            if method == 'GET':
-                if self.endpoint.connected():
-                    self.logger.info(f'endpoint connected')
-                    writer.write(b'HTTP/1.1 200 OK\r\n\r\n')
-                else:
-                    self.logger.info(f'endpoint not connected')
-                    writer.write(b'HTTP/1.1 400 Bad Request\r\n\r\n')
+            if not netloc.startswith('http://'):
+                writer.write(b'HTTP/1.1 400 Bad Request\r\n\r\n')
                 safe_close(writer)
                 return
+            url = urllib.parse.urlparse(netloc)
+            netloc = f'{url.hostname}:{url.port or 80}'
 
             if method == 'PING':
                 await self.endpoint.do_request(LocalRequest('ping'))
