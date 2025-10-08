@@ -566,7 +566,12 @@ class HttpServer:
             url = urllib.parse.urlparse(netloc)
             netloc = f'{url.netloc}:{url.port or 80}'
 
-            if method == 'PING' or method == 'DELETE':
+            if method == 'GET':
+                writer.write(b'HTTP/1.1 400 Bad Request\r\n\r\n')
+                safe_close(writer)
+                return
+
+            if method == 'PING':
                 await self.endpoint.do_request(LocalRequest('ping'))
                 writer.write(b'HTTP/1.1 200 OK\r\n\r\n')
                 safe_close(writer)
