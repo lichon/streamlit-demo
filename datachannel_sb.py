@@ -13,7 +13,7 @@ from aiortc import RTCDataChannel, RTCPeerConnection, RTCSessionDescription, RTC
 from supabase import acreate_client, AsyncClient
 from realtime import AsyncRealtimeChannel
 
-signal_room = os.environ.get('SIGNAL_ROOM', 'fd1e313f-cea1-408a-b1f2-13379d256876')
+signal_room = os.environ.get('SIGNAL_ROOM', 'default')
 supabase_key = os.environ.get('SUPABASE_KEY', '')
 supabase_url = os.environ.get('SUPABASE_URL', '')
 
@@ -388,7 +388,6 @@ class RealtimePeer:
             self._send_channel_command(res)
 
     def _recv_channel_command(self, msg):
-        log(self.peer_id, f'channel recv {msg}')
         try:
             channelMessage = ChannelMessage.fromdict(msg['payload'])
             if self.peer_id == channelMessage.id:
@@ -400,8 +399,8 @@ class RealtimePeer:
                 log(self.peer_id, f'invalid command no tid {cmd}')
                 return
 
-            log(cmd.tid, f'recv command {cmd}')
             if cmd.tid in self._outgoing_requests:
+                log(cmd.tid, f'recv res {cmd}')
                 # get response from other peer
                 req = self._outgoing_requests.pop(cmd.tid)
                 if req and req.future and not req.future.done():
@@ -620,7 +619,7 @@ class HttpServer:
 
             await handle_dc_open(transport, None)
         else:
-            self.logger.info(f'endpoint not ready {netloc}')
+            self.logger.info(f'endpoint not ready {self.endpoint.channel.state}')
             reject()
 
     async def start(self, port: int = 1234):
