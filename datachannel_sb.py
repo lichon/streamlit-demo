@@ -538,10 +538,10 @@ class RealtimePeer:
         asyncio.create_task(self._event_loop())
 
     async def stop(self):
+        if self.client:
+            self.client.remove_all_channels()
         self._queue.put_nowait(LocalRequest('close'))
-        self.client.remove_all_channels()
-        if len(self.peers):
-            asyncio.gather(*[peer.close() for peer in self.peers.values()])
+        await asyncio.gather(*[peer.close() for peer in self.peers.values()])
 
 class HttpServer:
     ''' http proxy '''
