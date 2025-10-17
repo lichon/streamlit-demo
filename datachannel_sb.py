@@ -6,6 +6,8 @@ import json
 import time
 import os
 import pickle
+import base64
+import hashlib
 
 import asyncio
 import uuid
@@ -614,7 +616,7 @@ class HttpPeer(ProxyPeer):
             return None
 
     async def do_request(self, req: LocalRequest):
-        await req.reader.readuntil(b'\r\n\r\n')
+        headers = await req.reader.readuntil(b'\r\n\r\n')
         if req.method == 'CONNECT':
             # open connection to remote http endpoint
             reader, writer = await asyncio.open_connection(self.endpoint_cname, 443, ssl=True)
@@ -622,9 +624,9 @@ class HttpPeer(ProxyPeer):
             # relay connect request to remote endpoint
             req_line = f'GET /connect/{req.uri} HTTP/1.1\r\n'.encode()
             host_line = f'Host: {self.endpoint_cname}\r\n'.encode()
-            webscket_accept = b'Sec-WebSocket-Key: SGVsbG8sIHdvcmxkIQ==\r\nSec-WebSocket-Version: 13\r\n'
+            ws_key = b'Sec-WebSocket-Key: SGVsbG8sIHdvcmxkIQ==\r\nSec-WebSocket-Version: 13\r\n'
             upgrade = b'Connection: upgrade\r\nUpgrade: websocket\r\n\r\n'
-            await safe_write_buffers(writer, [req_line, host_line, upgrade])
+            await safe_write_buffers(writer, [req_line, host_line, ws_key, upgrade])
 
             # remote connect success, reply http200 to client
             http200 = b'HTTP/1.1 200 Connection established\r\n\r\n'
@@ -638,12 +640,25 @@ class HttpPeer(ProxyPeer):
             if not host or not port:
                 _reject(None, 'Invalid host')
 
+            # parse websocket key from headers, and calculate accept key
+            ws_key = None
+            header_lines = headers.decode().split('\r\n')
+            for line in header_lines:
+                if line.lower().startswith('sec-websocket-key:'):
+                    ws_key = line.split(':', 1)[1].strip()
+                    break
+            if not ws_key:
+                _reject(req, 'Invalid key')
+                return
+            magic = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11'
+            ws_accept = base64.b64encode(hashlib.sha1((ws_key + magic).encode()).digest()).decode()
+
             reader, writer = await asyncio.open_connection(host, port)
             # remote connect success, reply http101 to client
             http101 = b'HTTP/1.1 101 Switching Protocols\r\n'
             upgrade = b'Connection: upgrade\r\nUpgrade: websocket\r\n'
-            webscket_accept = b'Sec-WebSocket-Accept: qGEgH3En71di5rrssAZTmtRTyFk=\r\n\r\n'
-            await safe_write_buffers(req.writer, [http101, upgrade, webscket_accept])
+            sec_accept = f'Sec-WebSocket-Accept: {ws_accept}\r\n\r\n'.encode()
+            await safe_write_buffers(req.writer, [http101, upgrade, sec_accept])
 
             log(self.peer_id, f'connected to {host}:{port}')
             asyncio.ensure_future(relay_reader_to_writer(req.reader, writer, netloc))
