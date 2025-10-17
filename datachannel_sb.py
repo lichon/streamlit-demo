@@ -637,8 +637,9 @@ class HttpPeer(ProxyPeer):
                 _reject(None, 'Invalid host')
 
             reader, writer = await asyncio.open_connection(host, port)
-            asyncio.ensure_future(relay_reader_to_writer(req.reader, writer, req.uri))
-            await relay_reader_to_writer(reader, req.writer, req.uri)
+            log(self.peer_id, f'connected to {host}:{port}')
+            asyncio.ensure_future(relay_reader_to_writer(req.reader, writer, netloc))
+            await relay_reader_to_writer(reader, req.writer, netloc)
         else:
             _reject(req, 'Not supported')
 
