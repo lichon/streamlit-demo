@@ -619,8 +619,8 @@ class HttpPeer(ProxyPeer):
             # open connection to remote http endpoint
             reader, writer = await asyncio.open_connection(self.endpoint_cname, 443, ssl=True)
 
-            # replace request method line
-            req_line = f'PUT /{req.uri} HTTP/1.1\r\n'.encode()
+            # relay connect request to remote endpoint
+            req_line = f'OPTIONS /{req.uri} HTTP/1.1\r\n'.encode()
             host_line = f'Host: {self.endpoint_cname}\r\n'.encode()
             chunked_line = b'Transfer-Encoding: chunked\r\n\r\n'
             await safe_write_buffers(writer, [req_line, host_line, chunked_line])
@@ -631,7 +631,7 @@ class HttpPeer(ProxyPeer):
 
             asyncio.ensure_future(relay_reader_to_writer(req.reader, writer, self.endpoint_cname))
             await relay_reader_to_writer(reader, req.writer, self.endpoint_cname)
-        elif req.method == 'PUT':
+        elif req.method == 'OPTIONS':
             netloc = req.uri.lstrip('/')
             host, port = netloc.split(':')
             if not host or not port:
@@ -651,6 +651,7 @@ class HttpServer:
     def __init__(self, endpoint: ProxyPeer):
         self.logger = logging.getLogger('proxy')
         self.endpoint = endpoint
+        self.http_peer = HttpPeer()
 
     async def handle_request(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
         try:
@@ -668,7 +669,7 @@ class HttpServer:
             if self.endpoint.connected():
                 writer.write(b'HTTP/1.1 200 OK\r\n\r\n')
             else:
-                writer.write(b'HTTP/1.1 400 Bad Request\r\n\r\n')
+                writer.write(b'HTTP/1.1 500 Not ready\r\n\r\n')
             safe_close(writer)
             return
         # custom testing
@@ -676,6 +677,15 @@ class HttpServer:
             res = await self.endpoint.do_request(LocalRequest('ping'))
             writer.write(f'HTTP/1.1 200 {res}\r\n\r\n'.encode())
             safe_close(writer)
+            return
+        if method == 'OPTIONS' and uri.startswith('/'):
+            await self.http_peer.do_request(LocalRequest(
+                method,
+                uri,
+                self.http_peer.peer_id,
+                reader,
+                writer
+            ))
             return
 
         # https proxy
