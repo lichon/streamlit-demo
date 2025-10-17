@@ -29,12 +29,12 @@ class PeerTunnel:
         return self.proc and self.proc.poll() is None
 
     def install_deps(sefl) -> None:
-        pip = subprocess.Popen(
-            f"pip install -r peer_requirements.txt",
-            shell=True,
-        )
         print("Installing peer dependencies...")
-        pip.wait()
+        # pip = subprocess.Popen(
+        #     f"pip install -r peer_requirements.txt",
+        #     shell=True,
+        # )
+        # pip.wait()
 
     def start_tunnel(self, secrets: dict) -> None:
         print("Starting PeerTunnel...")
