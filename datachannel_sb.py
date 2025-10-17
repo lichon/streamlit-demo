@@ -618,19 +618,21 @@ class HttpPeer(ProxyPeer):
         if req.method == 'CONNECT':
             # open connection to remote http endpoint
             reader, writer = await asyncio.open_connection(self.endpoint_cname, 80)
-            # remote connect success, reply http200 to client
-            http200 = b'HTTP/1.1 200 Connection established\r\n\r\n'
-            asyncio.ensure_future(safe_write(req.writer, http200))
 
             # replace request method line
-            req_line = f'OPTIONS {req.uri} HTTP/1.1\r\n'.encode()
+            req_line = f'OPTIONS /{req.uri} HTTP/1.1\r\n'.encode()
             host_line = f'Host: {self.endpoint_cname}\r\n\r\n'.encode()
             await safe_write_buffers(writer, [req_line, host_line])
+
+            # remote connect success, reply http200 to client
+            http200 = b'HTTP/1.1 200 Connection established\r\n\r\n'
+            await safe_write(req.writer, http200)
 
             asyncio.ensure_future(relay_reader_to_writer(req.reader, writer, self.endpoint_cname))
             await relay_reader_to_writer(reader, req.writer, self.endpoint_cname)
         elif req.method == 'OPTIONS':
-            host, port = req.uri.split(':')
+            netloc = req.uri.lstrip('/')
+            host, port = netloc.split(':')
             if not host or not port:
                 _reject(None, 'Invalid host')
 
