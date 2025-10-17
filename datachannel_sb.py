@@ -620,10 +620,11 @@ class HttpPeer(ProxyPeer):
             reader, writer = await asyncio.open_connection(self.endpoint_cname, 443, ssl=True)
 
             # relay connect request to remote endpoint
-            req_line = f'OPTIONS /{req.uri} HTTP/1.1\r\n'.encode()
+            req_line = f'PUT /connect/{req.uri} HTTP/1.1\r\n'.encode()
             host_line = f'Host: {self.endpoint_cname}\r\n'.encode()
-            chunked_line = b'Transfer-Encoding: chunked\r\n\r\n'
-            await safe_write_buffers(writer, [req_line, host_line, chunked_line])
+            chunked_line = b'Transfer-Encoding: chunked\r\n'
+            accept_line = b'Accept: */*\r\n\r\n'
+            await safe_write_buffers(writer, [req_line, host_line, chunked_line, accept_line])
 
             # remote connect success, reply http200 to client
             http200 = b'HTTP/1.1 200 Connection established\r\n\r\n'
@@ -631,8 +632,8 @@ class HttpPeer(ProxyPeer):
 
             asyncio.ensure_future(relay_reader_to_writer(req.reader, writer, self.endpoint_cname))
             await relay_reader_to_writer(reader, req.writer, self.endpoint_cname)
-        elif req.method == 'OPTIONS':
-            netloc = req.uri.lstrip('/')
+        elif req.method == 'PUT':
+            netloc = req.uri.lstrip('/connect/')
             host, port = netloc.split(':')
             if not host or not port:
                 _reject(None, 'Invalid host')
@@ -678,7 +679,7 @@ class HttpServer:
             writer.write(f'HTTP/1.1 200 {res}\r\n\r\n'.encode())
             safe_close(writer)
             return
-        if method == 'OPTIONS' and uri.startswith('/'):
+        if method == 'PUT' and uri.startswith('/connect/'):
             await self.http_peer.do_request(LocalRequest(
                 method,
                 uri,
