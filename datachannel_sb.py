@@ -627,7 +627,7 @@ class HttpPeer(ProxyPeer):
                 frame.extend(payload_len.to_bytes(8, 'big'))
 
             frame.extend(payload)
-            log(tag, f'tcp->ws write {payload_len} bytes\n{payload.hex()}')
+            # log(tag, f'tcp->ws write {payload_len} bytes {len(payload)}')
             await safe_write(writer, bytes(frame))
         safe_close(writer)
         log(tag, 'tcp->ws relays done')
@@ -659,7 +659,7 @@ class HttpPeer(ProxyPeer):
                 payload = await reader.read(payload_len)
             # Only relay text or binary frames
             if opcode in (0x01, 0x02):
-                log(tag, f'ws->tcp write {payload_len} bytes\n{payload.hex()}')
+                # log(tag, f'ws->tcp write {payload_len} bytes {len(payload)}')
                 await safe_write(writer, payload)
         safe_close(writer)
         log(tag, 'ws->tcp relays done')
