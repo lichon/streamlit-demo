@@ -23,7 +23,24 @@ RELAY_BUFFER_SIZE = 4096
 BOOTSTRAP_LABEL = 'bootstrap'
 TRANSPORT_LABEL = 'transport'
 
-logger = logging.getLogger('logger')
+logger = logging.getLogger('proxypeer')
+
+
+class ProxyPeer:
+    ''' proxy peer base class '''
+    peer_id: str = None
+
+    def start(self):
+        pass
+
+    def stop(self):
+        pass
+
+    def connected(self):
+        return True
+
+    async def do_request(self):
+        pass
 
 
 @dataclass
@@ -46,33 +63,20 @@ class TransferData:
 class LocalRequest:
     ''' request send to event loop '''
 
-    type: str = None
+    method: str = None
     "The type of the event"
 
-    content: Optional[str] = None
-    "anything"
+    uri: Optional[str] = None
+    "request uri"
 
     tid: str = str(uuid.uuid1())
     "transaction id"
 
+    reader: Optional[asyncio.StreamReader] = None
+
+    writer: Optional[asyncio.StreamWriter] = None
+
     future: Optional[asyncio.Future] = None
-
-    def asdict(self) -> dict:
-        return {
-            'tid': self.tid,
-            'type': self.type,
-            'content': self.content,
-        }
-
-    def to_json(self) -> str:
-        self_dict = self.asdict()
-        none_removed = {k: v for k, v in self_dict.items() if v is not None}
-        return json.dumps(none_removed)
-
-    @classmethod
-    def from_json(cls, json_str: str):
-        self_dict = json.loads(json_str)
-        return cls(**self_dict)
 
 
 @dataclass
@@ -241,17 +245,18 @@ def safe_close(writer: asyncio.StreamWriter):
         pass
 
 
-async def safe_write(writer, data):
+async def safe_write(writer: asyncio.StreamWriter, data: bytes):
     ''' Safely write data to a StreamWriter '''
     try:
         if writer and len(data) and not writer.is_closing():
             writer.write(data)
             await writer.drain()
     except Exception:
+        print('safe_write error')
         safe_close(writer)
 
 
-async def safe_write_buffers(writer, buffers: list):
+async def safe_write_buffers(writer: asyncio.StreamWriter, buffers: list[bytes]):
     ''' Safely write all buffers to a StreamWriter '''
     if not writer or writer.is_closing():
         return
@@ -261,6 +266,7 @@ async def safe_write_buffers(writer, buffers: list):
         await writer.drain()
         buffers.clear()
     except Exception:
+        print('safe_write_buffers error')
         safe_close(writer)
 
 
@@ -275,7 +281,7 @@ async def relay_reader_to_writer(reader: asyncio.StreamReader, writer: asyncio.S
     log(tag, 'tcp relays done')
 
 
-async def relay_reader_to_dc(reader: asyncio.StreamReader, pair: DataChannelPair, tid: str):
+async def relay_reader_to_dc(reader: asyncio.StreamReader, pair: DataChannelPair, tid: str = None):
     ''' Relay data from StreamReader to DataChannel '''
     while not reader.at_eof():
         if (pair.sender.bufferedAmount > RELAY_BUFFER_SIZE * 100):
@@ -288,10 +294,10 @@ async def relay_reader_to_dc(reader: asyncio.StreamReader, pair: DataChannelPair
             pair.transfer(tid, data)
         else:
             pair.send(data)
-    log(pair.signal_sid, f'dc {pair.get_label()} relays done {tid}')
+    log(pair.signal_sid, f'dc {pair.get_label()} relays done')
 
 
-class RealtimePeer:
+class RealtimePeer(ProxyPeer):
     ''' A peer that uses supabase realtime as signaling server '''
 
     def __init__(self):
@@ -451,7 +457,7 @@ class RealtimePeer:
                 log(tid, f'dc {new_dc.label} opened')
                 req.future.set_result(DataChannelPair.new_p2p(tid, new_dc))
 
-            new_dc = peer.createDataChannel(req.content)
+            new_dc = peer.createDataChannel(req.uri)
             new_dc.once('open', on_new_dc_open)
 
         def on_close():
@@ -497,18 +503,57 @@ class RealtimePeer:
         req.future.set_result(res.body if res else 'no response')
         log(self.peer_id, f'ping test result {res}')
 
+    def _reject(request: LocalRequest):
+        if request.writer:
+            request.writer.write(b'HTTP/1.1 500 Not ready\r\n\r\n')
+            safe_close(request.writer)
+
+    async def handle_http(self, req: LocalRequest):
+        headers = await req.reader.readuntil(b'\r\n\r\n')
+        netloc = req.uri
+        if (req.uri.startswith('http://')):
+            url = urllib.parse.urlparse(req.uri)
+            netloc = f'{url.hostname}:{url.port or 80}'
+        transport_req = LocalRequest('transport', netloc, req.tid)
+        transport: DataChannelPair = await self.do_request(transport_req)
+
+        if not transport or not transport.is_ready():
+            log(self.peer_id, f'transport not ready {req.uri}')
+            self._reject(req)
+            return
+
+        @transport.receiver.on('message')
+        def on_message(msg):
+            if isinstance(msg, str):
+                return
+            asyncio.ensure_future(safe_write(req.writer, msg))
+
+        if req.method == 'CONNECT':
+            http200 = b'HTTP/1.1 200 Connection established\r\n\r\n'
+            asyncio.ensure_future(safe_write(req.writer, http200))
+        else:
+            req_line = f'{req.method} {req.uri} HTTP/1.1\r\n'.encode()
+            transport.send(req_line)
+            transport.send(headers)
+
+        await relay_reader_to_dc(req.reader, transport)
+        # make request done
+        req.future.set_result(None)
+
     async def start_event_loop(self):
         log(self.peer_id, f'eventloop start')
         try:
             req: LocalRequest
             while True:
                 req = await self._queue.get()
-                if req.type == 'transport':
+                if req.method == 'transport':
                     asyncio.create_task(self.create_p2p_transport(req))
-                elif req.type == 'ping':
+                elif req.method == 'ping':
                     asyncio.create_task(self.ping_test(req))
-                elif req.type == 'close':
+                elif req.method == 'close':
                     break
+                else:
+                    asyncio.create_task(self.handle_http(req))
             log(self.peer_id, f'eventloop exit')
         except Exception as e:
             log(self.peer_id, f'eventloop error: {e}')
@@ -518,8 +563,7 @@ class RealtimePeer:
         self._queue.put_nowait(request)
         try:
             await asyncio.wait_for(request.future, timeout)
-            res = request.future.result()
-            return res
+            return request.future.result()
         except Exception as e:
             log(self.peer_id, f'{request} error {e.__class__.__name__} {e}')
             return None
@@ -546,29 +590,42 @@ class RealtimePeer:
         await asyncio.gather(*[peer.close() for peer in self.peers.values()])
 
 
-def get_endpoint_cname():
-    ''' get endpoint domain cname '''
-    if not endpoint_domain:
+class HttpPeer:
+    ''' http peer '''
+
+    def __init__(self, use_options: bool = True):
+        self.endpoint_cname = self._get_endpoint_cname()
+        self.peer_id = 'http-peer'
+
+    def _get_endpoint_cname(self):
+        ''' get endpoint domain cname '''
+        if not endpoint_domain:
+            return None
+        # request dns cname
+        try:
+            import dns.resolver
+            answers = dns.resolver.resolve(endpoint_domain, 'CNAME', raise_on_no_answer=False)
+            for r in answers:
+                cname = str(r.target).rstrip('.')
+                log('', f'get_endpoint_cname(dnspython) {cname}')
+                return cname
+        except Exception:
+            return None
+
+    def start(self):
+        pass
+
+    def stop(self):
+        pass
+
+    def connected(self):
+        return True
+
+    async def do_request(self, request: LocalRequest, timeout: int = 60):
+        if request.method == 'transport':
+            netloc = request.uri
+            await self.http_relay(netloc, request.reader, request.writer)
         return None
-    # request dns cname
-    try:
-        import dns.resolver
-        answers = dns.resolver.resolve(endpoint_domain, 'CNAME', raise_on_no_answer=False)
-        for r in answers:
-            cname = str(r.target).rstrip('.')
-            log('', f'get_endpoint_cname(dnspython) {cname}')
-            return cname
-    except Exception:
-        return None
-
-
-class HttpServer:
-    ''' http proxy '''
-
-    def __init__(self, endpoint: RealtimePeer):
-        self.logger = logging.getLogger('proxy')
-        self.endpoint = endpoint
-        self.endpoint_cname = get_endpoint_cname()
 
     async def http_relay(self, netloc: str, local_reader: asyncio.StreamReader, local_writer: asyncio.StreamWriter):
         host, port = netloc.split(':')
@@ -578,92 +635,65 @@ class HttpServer:
             port = '443'
         reader, writer = await asyncio.open_connection(host, port)
         asyncio.ensure_future(relay_reader_to_writer(local_reader, writer, 'local->remote'))
-        asyncio.ensure_future(relay_reader_to_writer(reader, local_writer, 'remote->local'))
+        await relay_reader_to_writer(reader, local_writer, 'remote->local')
+
+
+class HttpServer:
+    ''' http proxy '''
+
+    def __init__(self, endpoint: ProxyPeer):
+        self.logger = logging.getLogger('proxy')
+        self.endpoint = endpoint
 
     async def handle_request(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
         try:
             request_line = (await reader.readline()).decode()
-            method, netloc, _ = request_line.split()
+            method, uri, _ = request_line.split()
         except Exception:
             writer.write(b'HTTP/1.1 400 Bad Request\r\n\r\n')
             safe_close(writer)
             return
 
-        self.logger.info(f'received {method} {netloc}')
+        self.logger.info(f'received {method} {uri}')
         # client_peername = writer.get_extra_info('peername')
-        if method == 'GET' and netloc == '/':
+        # endpoint readiness check
+        if method == 'GET' and uri == '/':
             if self.endpoint.connected():
-                self.logger.info(f'endpoint connected')
                 writer.write(b'HTTP/1.1 200 OK\r\n\r\n')
             else:
-                self.logger.info(f'endpoint not connected')
                 writer.write(b'HTTP/1.1 400 Bad Request\r\n\r\n')
+            safe_close(writer)
+            return
+        # custom testing
+        if method == 'GET' and uri == '/ping':
+            res = await self.endpoint.do_request(LocalRequest('ping'))
+            writer.write(f'HTTP/1.1 200 {res}\r\n\r\n'.encode())
             safe_close(writer)
             return
 
         # https proxy
         if method != 'CONNECT':
-            # custom method testing
-            if method == 'PING':
-                await self.endpoint.do_request(LocalRequest('ping'))
-                writer.write(b'HTTP/1.1 200 OK\r\n\r\n')
-                safe_close(writer)
-                return
-
-            if method == 'INFO':
-                cname = get_endpoint_cname()
-                writer.write(f'HTTP/1.1 200 {cname}\r\n\r\n'.encode())
-                safe_close(writer)
-                return
-
-            # http proxy
-            if not netloc.startswith('http://'):
+            # http proxy, request line: GET http://host:port/path HTTP/1.1
+            if not uri.startswith('http://'):
                 writer.write(b'HTTP/1.1 400 Bad Request\r\n\r\n')
                 safe_close(writer)
                 return
-            url = urllib.parse.urlparse(netloc)
-            netloc = f'{url.hostname}:{url.port or 80}'
-
-        # read all headers
-        all_headers = await reader.readuntil(b'\r\n\r\n')
-
-        def reject():
-            self.logger.info(f'rejected {netloc}')
-            writer.write(b'HTTP/1.1 500 Not ready\r\n\r\n')
-            safe_close(writer)
-
-        async def handle_dc_open(transport: DataChannelPair, tid: str):
-            if method in ['CONNECT', 'OPTIONS']:
-                http200 = b'HTTP/1.1 200 Connection established\r\n\r\n'
-                asyncio.ensure_future(safe_write(writer, http200))
-            elif tid:
-                transport.transfer(tid, request_line.encode())
-                transport.transfer(tid, all_headers)
-            else:
-                transport.send(request_line.encode())
-                transport.send(all_headers)
-            await relay_reader_to_dc(reader, transport, tid)
 
         # request new dc
         if self.endpoint and self.endpoint.connected():
-            tid = self.endpoint.peer_id
-            # use peer id as transport id, reuse existing peer connection
-            transport: DataChannelPair = await self.endpoint.do_request(LocalRequest('transport', netloc, tid))
-            if not transport or not transport.is_ready():
-                self.logger.info(f'transport {transport} not ready {netloc}')
-                reject()
-                return
-
-            @transport.receiver.on('message')
-            def on_message(msg):
-                if isinstance(msg, str):
-                    return
-                asyncio.ensure_future(safe_write(writer, msg))
-
-            await handle_dc_open(transport, None)
+            req = LocalRequest(
+                method.upper(),
+                uri,
+                self.endpoint.peer_id,
+                reader,
+                writer
+            )
+            await self.endpoint.do_request(req)
+            self.logger.info(f'done {method} {uri}')
         else:
-            self.logger.info(f'endpoint not ready {self.endpoint.channel.state}')
-            reject()
+            self.logger.info(f'rejected {method} {uri}')
+            writer.write(b'HTTP/1.1 500 Not ready\r\n\r\n')
+            safe_close(writer)
 
     async def start(self, port: int = 1234):
         server = await asyncio.start_server(self.handle_request, port=port)
@@ -685,6 +715,9 @@ async def main():
         if '--server' in sys.argv:
             process = HttpServer(RealtimePeer())
             await process.start(port=8001)
+        elif '--http' in sys.argv:
+            process = HttpServer(HttpPeer())
+            await process.start(port=2334)
         else:
             process = HttpServer(RealtimePeer())
             await process.start(port=2234)
@@ -704,4 +737,6 @@ if __name__ == '__main__':
         level=logging.DEBUG if debug else logging.INFO,
         format='%(asctime)s %(name)s %(levelname)s %(message)s'
     )
+    if not debug:
+        logging.getLogger('realtime._async.client').setLevel(logging.WARNING)
     asyncio.run(main())
