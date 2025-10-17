@@ -606,21 +606,29 @@ class HttpPeer(ProxyPeer):
         except Exception:
             return None
 
-
     async def relay_tcp_to_ws(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter, tag: str):
         ''' Relay data from StreamReader to ws StreamWriter '''
         while not reader.at_eof():
             data = await reader.read(RELAY_BUFFER_SIZE)
             if not data:
                 break
-            length = len(data)
-            if length < 126:
-                header = b'\x82' + bytes([length])
-            elif length < (1 << 16):
-                header = b'\x82\x7e' + length.to_bytes(2, 'big')
+            payload_len = len(data)
+
+            frame = bytearray()
+            frame.append(0x80 | 0x02)  # FIN=1, set opcode
+
+            if payload_len < 126:
+                frame.append(payload_len)
+            elif payload_len <= 0xFFFF:
+                frame.append(126)
+                frame.extend(payload_len.to_bytes(2, 'big'))
             else:
-                header = b'\x82\x7f' + length.to_bytes(8, 'big')
-            await safe_write(writer, header + data)
+                frame.append(127)
+                frame.extend(payload_len.to_bytes(8, 'big'))
+
+            frame.extend(data)
+            log(tag, f'tcp->ws write {payload_len} bytes')
+            await safe_write(writer, bytes(frame))
         safe_close(writer)
         log(tag, 'tcp->ws relays done')
 
@@ -644,8 +652,10 @@ class HttpPeer(ProxyPeer):
             mask = await reader.read(4)
             payload = await reader.read(length)
             decoded = bytes(b ^ mask[i % 4] for i, b in enumerate(payload))
+            log(tag, f'tcp->ws read {length} bytes')
             # Only relay text or binary frames
-            if opcode in (0x1, 0x2):
+            if opcode in (0x01, 0x02):
+                log(tag, f'tcp<-ws write {length} bytes')
                 await safe_write(writer, decoded)
         safe_close(writer)
         log(tag, 'tcp<-ws relays done')
@@ -661,11 +671,14 @@ class HttpPeer(ProxyPeer):
             req_headers = (
                 f'GET /connect/{req.uri} HTTP/1.1\r\n'
                 f'Host: {self.endpoint_cname}\r\n'
+                f"Sec-WebSocket-Key: SGVsbG8sIHdvcmxkIQ==\r\n"
+                f"Sec-WebSocket-Version: 13\r\n"
                 f'Connection: upgrade\r\n'
                 f'Upgrade: websocket\r\n\r\n'
             )
             await safe_write(writer, req_headers.encode())
-            await reader.readuntil(b'\r\n\r\n')  # read http101 response
+            http101 = await reader.readuntil(b'\r\n\r\n')  # read http101 response
+            log(self.peer_id, f'connected to {self.endpoint_cname} \n{http101.decode().strip()}')
 
             # remote connect success, reply http200 to client
             http200 = b'HTTP/1.1 200 Connection established\r\n\r\n'
