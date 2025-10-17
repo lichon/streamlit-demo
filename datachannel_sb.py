@@ -620,10 +620,10 @@ class HttpPeer(ProxyPeer):
             reader, writer = await asyncio.open_connection(self.endpoint_cname, 443, ssl=True)
 
             # relay connect request to remote endpoint
-            req_line = f'PUT /connect/{req.uri} HTTP/1.1\r\n'.encode()
+            req_line = f'GET /connect/{req.uri} HTTP/1.1\r\n'.encode()
             host_line = f'Host: {self.endpoint_cname}\r\n'.encode()
-            chunked_line = b'Transfer-Encoding: chunked\r\n'
-            accept_line = b'Accept: */*\r\n\r\n'
+            chunked_line = b'Connection: upgrade\r\n'
+            accept_line = b'Upgrade: test\r\n\r\n'
             await safe_write_buffers(writer, [req_line, host_line, chunked_line, accept_line])
 
             # remote connect success, reply http200 to client
@@ -632,13 +632,17 @@ class HttpPeer(ProxyPeer):
 
             asyncio.ensure_future(relay_reader_to_writer(req.reader, writer, self.endpoint_cname))
             await relay_reader_to_writer(reader, req.writer, self.endpoint_cname)
-        elif req.method == 'PUT':
+        elif req.method == 'GET' and req.uri.startswith('/connect/'):
             netloc = req.uri.lstrip('/connect/')
             host, port = netloc.split(':')
             if not host or not port:
                 _reject(None, 'Invalid host')
 
             reader, writer = await asyncio.open_connection(host, port)
+            # remote connect success, reply http101 to client
+            http101 = b'HTTP/1.1 101 Switching Protocols\r\n\r\n'
+            await safe_write(req.writer, http101)
+
             log(self.peer_id, f'connected to {host}:{port}')
             asyncio.ensure_future(relay_reader_to_writer(req.reader, writer, netloc))
             await relay_reader_to_writer(reader, req.writer, netloc)
@@ -679,7 +683,7 @@ class HttpServer:
             writer.write(f'HTTP/1.1 200 {res}\r\n\r\n'.encode())
             safe_close(writer)
             return
-        if method == 'PUT' and uri.startswith('/connect/'):
+        if method == 'GET' and uri.startswith('/connect/'):
             await self.http_peer.do_request(LocalRequest(
                 method,
                 uri,
