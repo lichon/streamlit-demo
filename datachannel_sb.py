@@ -622,6 +622,7 @@ class HttpPeer(ProxyPeer):
             # relay connect request to remote endpoint
             req_line = f'GET /connect/{req.uri} HTTP/1.1\r\n'.encode()
             host_line = f'Host: {self.endpoint_cname}\r\n'.encode()
+            webscket_accept = b'Sec-WebSocket-Key: SGVsbG8sIHdvcmxkIQ==\r\nSec-WebSocket-Version: 13\r\n'
             upgrade = b'Connection: upgrade\r\nUpgrade: websocket\r\n\r\n'
             await safe_write_buffers(writer, [req_line, host_line, upgrade])
 
