@@ -609,13 +609,13 @@ class HttpPeer(ProxyPeer):
     async def relay_tcp_to_ws(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter, tag: str):
         ''' Relay data from StreamReader to ws StreamWriter '''
         while not reader.at_eof():
-            data = await reader.read(RELAY_BUFFER_SIZE)
-            if not data:
+            payload = await reader.read(RELAY_BUFFER_SIZE)
+            if not payload:
                 break
-            payload_len = len(data)
+            payload_len = len(payload)
 
             frame = bytearray()
-            frame.append(0x80 | 0x02)  # FIN=1, set opcode
+            frame.append(0x80 | 0x02)
 
             if payload_len < 126:
                 frame.append(payload_len)
@@ -626,8 +626,8 @@ class HttpPeer(ProxyPeer):
                 frame.append(127)
                 frame.extend(payload_len.to_bytes(8, 'big'))
 
-            frame.extend(data)
-            log(tag, f'tcp->ws write {payload_len} bytes')
+            frame.extend(payload)
+            log(tag, f'tcp->ws write {payload_len} bytes\n{payload.hex()}')
             await safe_write(writer, bytes(frame))
         safe_close(writer)
         log(tag, 'tcp->ws relays done')
@@ -652,13 +652,12 @@ class HttpPeer(ProxyPeer):
             mask = await reader.read(4)
             payload = await reader.read(length)
             decoded = bytes(b ^ mask[i % 4] for i, b in enumerate(payload))
-            log(tag, f'tcp->ws read {length} bytes')
             # Only relay text or binary frames
             if opcode in (0x01, 0x02):
-                log(tag, f'tcp<-ws write {length} bytes')
+                log(tag, f'ws->tcp write {length} bytes\n{decoded.hex()}')
                 await safe_write(writer, decoded)
         safe_close(writer)
-        log(tag, 'tcp<-ws relays done')
+        log(tag, 'ws->tcp relays done')
 
 
     async def do_request(self, req: LocalRequest):
@@ -678,7 +677,7 @@ class HttpPeer(ProxyPeer):
             )
             await safe_write(writer, req_headers.encode())
             http101 = await reader.readuntil(b'\r\n\r\n')  # read http101 response
-            log(self.peer_id, f'connected to {self.endpoint_cname} \n{http101.decode().strip()}')
+            log(self.peer_id, f'connected to {self.endpoint_cname}\n{http101.decode().strip()}')
 
             # remote connect success, reply http200 to client
             http200 = b'HTTP/1.1 200 Connection established\r\n\r\n'
