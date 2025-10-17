@@ -14,6 +14,7 @@ from supabase import acreate_client, AsyncClient
 from realtime import AsyncRealtimeChannel
 
 signal_room = os.environ.get('SIGNAL_ROOM', 'default')
+endpoint_domain = os.environ.get('ENDPOINT_DOMAIN', None)
 supabase_key = os.environ.get('SUPABASE_KEY', '')
 supabase_url = os.environ.get('SUPABASE_URL', '')
 
@@ -263,6 +264,17 @@ async def safe_write_buffers(writer, buffers: list):
         safe_close(writer)
 
 
+async def relay_reader_to_writer(reader: asyncio.StreamReader, writer: asyncio.StreamWriter, tag: str):
+    ''' Relay data from StreamReader to StreamWriter '''
+    while not reader.at_eof():
+        data = await reader.read(RELAY_BUFFER_SIZE)
+        if not data:
+            break
+        await safe_write(writer, data)
+    safe_close(writer)
+    log(tag, 'tcp relays done')
+
+
 async def relay_reader_to_dc(reader: asyncio.StreamReader, pair: DataChannelPair, tid: str):
     ''' Relay data from StreamReader to DataChannel '''
     while not reader.at_eof():
@@ -322,14 +334,6 @@ class RealtimePeer:
         except Exception:
             pass
 
-    ''' Get connected RTCPeerConnection '''
-    def _get_connected_peer(self, tid: str):
-        pc = self.peers.get(tid, None)
-        if pc and pc.connectionState == 'connected':
-            return pc
-        else:
-            return None
-
     ''' Create a new RTCPeerConnection with a bootstrap DataChannel '''
     async def create_peer(self, tid: str, opened=None, closed=None):
         # close old peer
@@ -366,6 +370,7 @@ class RealtimePeer:
 
     async def handle_p2p_connect(self, req: ChannelCommand):
         pc = await self.create_peer(req.tid)
+
         @pc.on('datachannel')
         def on_datachannel(dc: RTCDataChannel):
             p2p_transport = DataChannelPair.new_p2p(req.tid, dc)
@@ -379,7 +384,7 @@ class RealtimePeer:
             req.body['offer'].replace('a=setup:actpass', 'a=setup:passive'), 'answer'))
         return res
 
-    async def _handle_incoming_request(self, req: ChannelCommand):
+    async def handle_incoming_request(self, req: ChannelCommand):
         if req.method == 'ping':
             self._send_channel_command(ChannelCommand(req.tid, body='pong'))
         elif req.method == 'connect':
@@ -408,7 +413,7 @@ class RealtimePeer:
                 return
 
             # handle incoming request
-            asyncio.ensure_future(self._handle_incoming_request(cmd))
+            asyncio.ensure_future(self.handle_incoming_request(cmd))
         except Exception as e:
             log(self.peer_id, f'handle incoming message error {e}')
 
@@ -453,14 +458,12 @@ class RealtimePeer:
             if not req.future.done():
                 req.future.set_exception(Exception('peer closed'))
 
-        peer: RTCPeerConnection = self._get_connected_peer(tid)
-        if peer:
-            on_open()
-            return
-
         peer: RTCPeerConnection = self.peers.get(tid, None)
         if peer:
-            req.future.set_exception(Exception(f'peer state {peer.connectionState}'))
+            if peer.connectionState == 'connected':
+                on_open()
+            else:
+                req.future.set_exception(Exception(f'peer state {peer.connectionState}'))
             return
 
         # create new peer connection
@@ -489,12 +492,12 @@ class RealtimePeer:
 
         await peer.setRemoteDescription(RTCSessionDescription(res.body['answer'], 'answer'))
 
-    async def _ping_test(self, req: LocalRequest):
+    async def ping_test(self, req: LocalRequest):
         res = await self.channel_request(ChannelCommand(method='ping'), 10)
         req.future.set_result(res.body if res else 'no response')
         log(self.peer_id, f'ping test result {res}')
 
-    async def _event_loop(self):
+    async def start_event_loop(self):
         log(self.peer_id, f'eventloop start')
         try:
             req: LocalRequest
@@ -503,7 +506,7 @@ class RealtimePeer:
                 if req.type == 'transport':
                     asyncio.create_task(self.create_p2p_transport(req))
                 elif req.type == 'ping':
-                    asyncio.create_task(self._ping_test(req))
+                    asyncio.create_task(self.ping_test(req))
                 elif req.type == 'close':
                     break
             log(self.peer_id, f'eventloop exit')
@@ -534,7 +537,7 @@ class RealtimePeer:
             'id': self.peer_id,
             'name': 'RealtimePeer',
         })
-        asyncio.create_task(self._event_loop())
+        asyncio.create_task(self.start_event_loop())
 
     async def stop(self):
         if self.client:
@@ -542,12 +545,40 @@ class RealtimePeer:
         self._queue.put_nowait(LocalRequest('close'))
         await asyncio.gather(*[peer.close() for peer in self.peers.values()])
 
+
+def get_endpoint_cname():
+    ''' get endpoint domain cname '''
+    if not endpoint_domain:
+        return None
+    # request dns cname
+    try:
+        import dns.resolver
+        answers = dns.resolver.resolve(endpoint_domain, 'CNAME', raise_on_no_answer=False)
+        for r in answers:
+            cname = str(r.target).rstrip('.')
+            log('', f'get_endpoint_cname(dnspython) {cname}')
+            return cname
+    except Exception:
+        return None
+
+
 class HttpServer:
     ''' http proxy '''
 
     def __init__(self, endpoint: RealtimePeer):
         self.logger = logging.getLogger('proxy')
         self.endpoint = endpoint
+        self.endpoint_cname = get_endpoint_cname()
+
+    async def http_relay(self, netloc: str, local_reader: asyncio.StreamReader, local_writer: asyncio.StreamWriter):
+        host, port = netloc.split(':')
+        if not host:
+            raise RuntimeError('invalid netloc')
+        if not port:
+            port = '443'
+        reader, writer = await asyncio.open_connection(host, port)
+        asyncio.ensure_future(relay_reader_to_writer(local_reader, writer, 'local->remote'))
+        asyncio.ensure_future(relay_reader_to_writer(reader, local_writer, 'remote->local'))
 
     async def handle_request(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
         try:
@@ -570,20 +601,28 @@ class HttpServer:
             safe_close(writer)
             return
 
-        # https proxy only
+        # https proxy
         if method != 'CONNECT':
+            # custom method testing
+            if method == 'PING':
+                await self.endpoint.do_request(LocalRequest('ping'))
+                writer.write(b'HTTP/1.1 200 OK\r\n\r\n')
+                safe_close(writer)
+                return
+
+            if method == 'INFO':
+                cname = get_endpoint_cname()
+                writer.write(f'HTTP/1.1 200 {cname}\r\n\r\n'.encode())
+                safe_close(writer)
+                return
+
+            # http proxy
             if not netloc.startswith('http://'):
                 writer.write(b'HTTP/1.1 400 Bad Request\r\n\r\n')
                 safe_close(writer)
                 return
             url = urllib.parse.urlparse(netloc)
             netloc = f'{url.hostname}:{url.port or 80}'
-
-            if method == 'PING':
-                await self.endpoint.do_request(LocalRequest('ping'))
-                writer.write(b'HTTP/1.1 200 OK\r\n\r\n')
-                safe_close(writer)
-                return
 
         # read all headers
         all_headers = await reader.readuntil(b'\r\n\r\n')
@@ -594,7 +633,7 @@ class HttpServer:
             safe_close(writer)
 
         async def handle_dc_open(transport: DataChannelPair, tid: str):
-            if method == 'CONNECT':
+            if method in ['CONNECT', 'OPTIONS']:
                 http200 = b'HTTP/1.1 200 Connection established\r\n\r\n'
                 asyncio.ensure_future(safe_write(writer, http200))
             elif tid:

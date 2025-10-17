@@ -14,10 +14,7 @@ class PeerTunnel:
     ) -> None:
         if not self.is_alive():
             self.install_deps()
-            signal_room = secrets["signal_room"]
-            sb_url = secrets["sb_url"]
-            sb_key = secrets["sb_key"]
-            self.start_tunnel(signal_room, sb_url, sb_key)
+            self.start_tunnel(secrets)
 
         atexit.register(self.proc.terminate)
 
@@ -39,12 +36,13 @@ class PeerTunnel:
         print("Installing peer dependencies...")
         pip.wait()
 
-    def start_tunnel(self, signal_room: str, url: str, key: str) -> None:
+    def start_tunnel(self, secrets: dict) -> None:
         print("Starting PeerTunnel...")
         env = os.environ.copy()
-        env['SIGNAL_ROOM'] = signal_room
-        env['SUPABASE_URL'] = url
-        env['SUPABASE_KEY'] = key
+        env['SIGNAL_ROOM'] = secrets["signal_room"]
+        env['SUPABASE_URL'] = secrets["sb_url"]
+        env['SUPABASE_KEY'] = secrets["sb_key"]
+        env['ENDPOINT_DOMAIN'] = secrets["endpoint_domain"]
         self.proc = subprocess.Popen(
             [sys.executable, "datachannel_sb.py"],
             shell=False,
