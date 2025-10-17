@@ -657,6 +657,14 @@ class HttpPeer(ProxyPeer):
                 payload = bytes(b ^ mask_key[i % 4] for i, b in enumerate(encoded))
             else:
                 payload = await reader.read(payload_len)
+
+            if len(payload) < payload_len:
+                payload += await reader.read(payload_len - len(payload))
+
+            if (len(payload) < payload_len):
+                log(tag, f'ws->tcp read incomplete payload {len(payload)}/{payload_len}')
+                break
+
             # Only relay text or binary frames
             if opcode in (0x01, 0x02):
                 # log(tag, f'ws->tcp write {payload_len} bytes {len(payload)}')
@@ -681,8 +689,7 @@ class HttpPeer(ProxyPeer):
                 f'Upgrade: websocket\r\n\r\n'
             )
             await safe_write(writer, req_headers.encode())
-            http101 = await reader.readuntil(b'\r\n\r\n')  # read http101 response
-            log(self.peer_id, f'connected to {self.endpoint_cname}\n{http101.decode().strip()}')
+            await reader.readuntil(b'\r\n\r\n')  # read http101 response
 
             # remote connect success, reply http200 to client
             http200 = b'HTTP/1.1 200 Connection established\r\n\r\n'
