@@ -30,10 +30,10 @@ class ProxyPeer:
     ''' proxy peer base class '''
     peer_id: str = None
 
-    def start(self):
+    async def start(self):
         pass
 
-    def stop(self):
+    async def stop(self):
         pass
 
     def connected(self):
@@ -226,6 +226,12 @@ class DataChannelPair:
 
 def log(trace_id: str, msg: str):
     logger.info(msg=f'{trace_id} {msg}')
+
+
+def _reject(request: LocalRequest, msg: str = 'Not ready'):
+    if request.writer:
+        request.writer.write(f'HTTP/1.1 500 {msg}\r\n\r\n'.encode())
+        safe_close(request.writer)
 
 
 async def safe_close_peer(pc: RTCPeerConnection):
@@ -503,11 +509,6 @@ class RealtimePeer(ProxyPeer):
         req.future.set_result(res.body if res else 'no response')
         log(self.peer_id, f'ping test result {res}')
 
-    def _reject(request: LocalRequest):
-        if request.writer:
-            request.writer.write(b'HTTP/1.1 500 Not ready\r\n\r\n')
-            safe_close(request.writer)
-
     async def handle_http(self, req: LocalRequest):
         headers = await req.reader.readuntil(b'\r\n\r\n')
         netloc = req.uri
@@ -519,7 +520,7 @@ class RealtimePeer(ProxyPeer):
 
         if not transport or not transport.is_ready():
             log(self.peer_id, f'transport not ready {req.uri}')
-            self._reject(req)
+            _reject(req)
             return
 
         @transport.receiver.on('message')
@@ -590,10 +591,10 @@ class RealtimePeer(ProxyPeer):
         await asyncio.gather(*[peer.close() for peer in self.peers.values()])
 
 
-class HttpPeer:
-    ''' http peer '''
+class HttpPeer(ProxyPeer):
+    ''' http peer, use OPTIONS as CONNECT request '''
 
-    def __init__(self, use_options: bool = True):
+    def __init__(self):
         self.endpoint_cname = self._get_endpoint_cname()
         self.peer_id = 'http-peer'
 
@@ -612,30 +613,32 @@ class HttpPeer:
         except Exception:
             return None
 
-    def start(self):
-        pass
+    async def do_request(self, req: LocalRequest):
+        await req.reader.readuntil(b'\r\n\r\n')
+        if req.method == 'CONNECT':
+            # open connection to remote http endpoint
+            reader, writer = await asyncio.open_connection(self.endpoint_cname, 80)
+            # remote connect success, reply http200 to client
+            http200 = b'HTTP/1.1 200 Connection established\r\n\r\n'
+            asyncio.ensure_future(safe_write(req.writer, http200))
 
-    def stop(self):
-        pass
+            # replace request method line
+            req_line = f'OPTIONS {req.uri} HTTP/1.1\r\n'.encode()
+            host_line = f'Host: {self.endpoint_cname}\r\n\r\n'.encode()
+            await safe_write_buffers(writer, [req_line, host_line])
 
-    def connected(self):
-        return True
+            asyncio.ensure_future(relay_reader_to_writer(req.reader, writer, self.endpoint_cname))
+            await relay_reader_to_writer(reader, req.writer, self.endpoint_cname)
+        elif req.method == 'OPTIONS':
+            host, port = req.uri.split(':')
+            if not host or not port:
+                _reject(None, 'Invalid host')
 
-    async def do_request(self, request: LocalRequest, timeout: int = 60):
-        if request.method == 'transport':
-            netloc = request.uri
-            await self.http_relay(netloc, request.reader, request.writer)
-        return None
-
-    async def http_relay(self, netloc: str, local_reader: asyncio.StreamReader, local_writer: asyncio.StreamWriter):
-        host, port = netloc.split(':')
-        if not host:
-            raise RuntimeError('invalid netloc')
-        if not port:
-            port = '443'
-        reader, writer = await asyncio.open_connection(host, port)
-        asyncio.ensure_future(relay_reader_to_writer(local_reader, writer, 'local->remote'))
-        await relay_reader_to_writer(reader, local_writer, 'remote->local')
+            reader, writer = await asyncio.open_connection(host, port)
+            asyncio.ensure_future(relay_reader_to_writer(req.reader, writer, req.uri))
+            await relay_reader_to_writer(reader, req.writer, req.uri)
+        else:
+            _reject(req, 'Not supported')
 
 
 class HttpServer:
@@ -717,7 +720,7 @@ async def main():
             await process.start(port=8001)
         elif '--http' in sys.argv:
             process = HttpServer(HttpPeer())
-            await process.start(port=2334)
+            await process.start(port=2234)
         else:
             process = HttpServer(RealtimePeer())
             await process.start(port=2234)
