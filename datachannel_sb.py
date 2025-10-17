@@ -278,17 +278,6 @@ async def safe_write_buffers(writer: asyncio.StreamWriter, buffers: list[bytes])
         safe_close(writer)
 
 
-async def relay_reader_to_writer(reader: asyncio.StreamReader, writer: asyncio.StreamWriter, tag: str):
-    ''' Relay data from StreamReader to StreamWriter '''
-    while not reader.at_eof():
-        data = await reader.read(RELAY_BUFFER_SIZE)
-        if not data:
-            break
-        await safe_write(writer, data)
-    safe_close(writer)
-    log(tag, 'tcp relays done')
-
-
 async def relay_reader_to_dc(reader: asyncio.StreamReader, pair: DataChannelPair, tid: str = None):
     ''' Relay data from StreamReader to DataChannel '''
     while not reader.at_eof():
@@ -596,6 +585,8 @@ class RealtimePeer(ProxyPeer):
 class HttpPeer(ProxyPeer):
     ''' http peer, use OPTIONS as CONNECT request '''
 
+    WS_MAGIC = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11'
+
     def __init__(self):
         self.endpoint_cname = self._get_endpoint_cname()
         self.peer_id = 'http-peer'
@@ -615,6 +606,51 @@ class HttpPeer(ProxyPeer):
         except Exception:
             return None
 
+
+    async def relay_tcp_to_ws(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter, tag: str):
+        ''' Relay data from StreamReader to ws StreamWriter '''
+        while not reader.at_eof():
+            data = await reader.read(RELAY_BUFFER_SIZE)
+            if not data:
+                break
+            length = len(data)
+            if length < 126:
+                header = b'\x82' + bytes([length])
+            elif length < (1 << 16):
+                header = b'\x82\x7e' + length.to_bytes(2, 'big')
+            else:
+                header = b'\x82\x7f' + length.to_bytes(8, 'big')
+            await safe_write(writer, header + data)
+        safe_close(writer)
+        log(tag, 'tcp->ws relays done')
+
+
+    async def relay_ws_to_tcp(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter, tag: str):
+        ''' Relay data from ws StreamReader to StreamWriter '''
+        # Support both text (opcode 0x1) and binary (opcode 0x2) frames
+        while True:
+            data = await reader.read(2)
+            if not data:
+                break
+            fin_opcode = data[0]
+            opcode = fin_opcode & 0x0F
+            length = data[1] & 127
+            if length == 126:
+                ext = await reader.read(2)
+                length = int.from_bytes(ext, 'big')
+            elif length == 127:
+                ext = await reader.read(8)
+                length = int.from_bytes(ext, 'big')
+            mask = await reader.read(4)
+            payload = await reader.read(length)
+            decoded = bytes(b ^ mask[i % 4] for i, b in enumerate(payload))
+            # Only relay text or binary frames
+            if opcode in (0x1, 0x2):
+                await safe_write(writer, decoded)
+        safe_close(writer)
+        log(tag, 'tcp<-ws relays done')
+
+
     async def do_request(self, req: LocalRequest):
         headers = await req.reader.readuntil(b'\r\n\r\n')
         if req.method == 'CONNECT':
@@ -622,18 +658,21 @@ class HttpPeer(ProxyPeer):
             reader, writer = await asyncio.open_connection(self.endpoint_cname, 443, ssl=True)
 
             # relay connect request to remote endpoint
-            req_line = f'GET /connect/{req.uri} HTTP/1.1\r\n'.encode()
-            host_line = f'Host: {self.endpoint_cname}\r\n'.encode()
-            ws_key = b'Sec-WebSocket-Key: SGVsbG8sIHdvcmxkIQ==\r\nSec-WebSocket-Version: 13\r\n'
-            upgrade = b'Connection: upgrade\r\nUpgrade: websocket\r\n\r\n'
-            await safe_write_buffers(writer, [req_line, host_line, ws_key, upgrade])
+            req_headers = (
+                f'GET /connect/{req.uri} HTTP/1.1\r\n'
+                f'Host: {self.endpoint_cname}\r\n'
+                f'Connection: upgrade\r\n'
+                f'Upgrade: websocket\r\n\r\n'
+            )
+            await safe_write(writer, req_headers.encode())
+            await reader.readuntil(b'\r\n\r\n')  # read http101 response
 
             # remote connect success, reply http200 to client
             http200 = b'HTTP/1.1 200 Connection established\r\n\r\n'
             await safe_write(req.writer, http200)
 
-            asyncio.ensure_future(relay_reader_to_writer(req.reader, writer, self.endpoint_cname))
-            await relay_reader_to_writer(reader, req.writer, self.endpoint_cname)
+            asyncio.ensure_future(self.relay_tcp_to_ws(req.reader, writer, self.endpoint_cname))
+            await self.relay_ws_to_tcp(reader, req.writer, self.endpoint_cname)
         elif req.method == 'GET' and req.uri.startswith('/connect/'):
             netloc = req.uri.lstrip('/connect/')
             host, port = netloc.split(':')
@@ -650,19 +689,21 @@ class HttpPeer(ProxyPeer):
             if not ws_key:
                 _reject(req, 'Invalid key')
                 return
-            magic = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11'
-            ws_accept = base64.b64encode(hashlib.sha1((ws_key + magic).encode()).digest()).decode()
+            ws_accept = base64.b64encode(hashlib.sha1((ws_key + self.WS_MAGIC).encode()).digest()).decode()
 
             reader, writer = await asyncio.open_connection(host, port)
             # remote connect success, reply http101 to client
-            http101 = b'HTTP/1.1 101 Switching Protocols\r\n'
-            upgrade = b'Connection: upgrade\r\nUpgrade: websocket\r\n'
-            sec_accept = f'Sec-WebSocket-Accept: {ws_accept}\r\n\r\n'.encode()
-            await safe_write_buffers(req.writer, [http101, upgrade, sec_accept])
+            response = (
+                'HTTP/1.1 101 Switching Protocols\r\n'
+                'Connection: upgrade\r\n'
+                'Upgrade: websocket\r\n'
+                f'Sec-WebSocket-Accept: {ws_accept}\r\n\r\n'
+            )
+            await safe_write(req.writer, response.encode())
 
             log(self.peer_id, f'connected to {host}:{port}')
-            asyncio.ensure_future(relay_reader_to_writer(req.reader, writer, netloc))
-            await relay_reader_to_writer(reader, req.writer, netloc)
+            asyncio.ensure_future(self.relay_ws_to_tcp(req.reader, writer, netloc))
+            await self.relay_tcp_to_ws(reader, req.writer, netloc)
         else:
             _reject(req, 'Not supported')
 
