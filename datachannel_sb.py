@@ -622,9 +622,8 @@ class HttpPeer(ProxyPeer):
             # relay connect request to remote endpoint
             req_line = f'GET /connect/{req.uri} HTTP/1.1\r\n'.encode()
             host_line = f'Host: {self.endpoint_cname}\r\n'.encode()
-            chunked_line = b'Connection: upgrade\r\n'
-            accept_line = b'Upgrade: test\r\n\r\n'
-            await safe_write_buffers(writer, [req_line, host_line, chunked_line, accept_line])
+            upgrade = b'Connection: upgrade\r\nUpgrade: websocket\r\n\r\n'
+            await safe_write_buffers(writer, [req_line, host_line, upgrade])
 
             # remote connect success, reply http200 to client
             http200 = b'HTTP/1.1 200 Connection established\r\n\r\n'
@@ -640,8 +639,9 @@ class HttpPeer(ProxyPeer):
 
             reader, writer = await asyncio.open_connection(host, port)
             # remote connect success, reply http101 to client
-            http101 = b'HTTP/1.1 101 Switching Protocols\r\n\r\n'
-            await safe_write(req.writer, http101)
+            http101 = b'HTTP/1.1 101 Switching Protocols\r\n'
+            upgrade = b'Upgrade: websocket\r\nConnection: Upgrade\r\n\r\n'
+            await safe_write_buffers(req.writer, [http101, upgrade])
 
             log(self.peer_id, f'connected to {host}:{port}')
             asyncio.ensure_future(relay_reader_to_writer(req.reader, writer, netloc))
