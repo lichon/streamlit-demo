@@ -640,8 +640,9 @@ class HttpPeer(ProxyPeer):
             reader, writer = await asyncio.open_connection(host, port)
             # remote connect success, reply http101 to client
             http101 = b'HTTP/1.1 101 Switching Protocols\r\n'
-            upgrade = b'Upgrade: websocket\r\nConnection: Upgrade\r\n\r\n'
-            await safe_write_buffers(req.writer, [http101, upgrade])
+            upgrade = b'Connection: upgrade\r\nUpgrade: websocket\r\n'
+            webscket_accept = b'Sec-WebSocket-Accept: qGEgH3En71di5rrssAZTmtRTyFk=\r\n\r\n'
+            await safe_write_buffers(req.writer, [http101, upgrade, webscket_accept])
 
             log(self.peer_id, f'connected to {host}:{port}')
             asyncio.ensure_future(relay_reader_to_writer(req.reader, writer, netloc))
