@@ -642,20 +642,25 @@ class HttpPeer(ProxyPeer):
                 break
             fin_opcode = data[0]
             opcode = fin_opcode & 0x0F
-            length = data[1] & 127
-            if length == 126:
+            mask = (data[1] >> 7) & 0x01
+            payload_len = data[1] & 127
+            if payload_len == 126:
                 ext = await reader.read(2)
-                length = int.from_bytes(ext, 'big')
-            elif length == 127:
+                payload_len = int.from_bytes(ext, 'big')
+            elif payload_len == 127:
                 ext = await reader.read(8)
-                length = int.from_bytes(ext, 'big')
-            mask = await reader.read(4)
-            payload = await reader.read(length)
-            decoded = bytes(b ^ mask[i % 4] for i, b in enumerate(payload))
+                payload_len = int.from_bytes(ext, 'big')
+
+            if mask:
+                mask_key = await reader.read(4)
+                encoded = await reader.read(payload_len)
+                payload = bytes(b ^ mask_key[i % 4] for i, b in enumerate(encoded))
+            else:
+                payload = await reader.read(payload_len)
             # Only relay text or binary frames
             if opcode in (0x01, 0x02):
-                log(tag, f'ws->tcp write {length} bytes\n{decoded.hex()}')
-                await safe_write(writer, decoded)
+                log(tag, f'ws->tcp write {payload_len} bytes\n{payload.hex()}')
+                await safe_write(writer, payload)
         safe_close(writer)
         log(tag, 'ws->tcp relays done')
 
