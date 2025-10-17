@@ -1,6 +1,7 @@
 import subprocess
 import atexit
 import os
+import sys
 
 
 class PeerTunnel:
@@ -45,8 +46,8 @@ class PeerTunnel:
         env['SUPABASE_URL'] = url
         env['SUPABASE_KEY'] = key
         self.proc = subprocess.Popen(
-            f"python datachannel_sb.py",
-            shell=True,
+            [sys.executable, "datachannel_sb.py"],
+            shell=False,
             env=env
         )
 
