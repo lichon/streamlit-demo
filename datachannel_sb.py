@@ -313,7 +313,7 @@ class RealtimePeer(ProxyPeer):
             if not host or not port:
                 raise RuntimeError('invalid label')
 
-            buffers = []
+            buffers = bytearray()
 
             @transport.receiver.on('message')
             def on_message(msg):
@@ -321,7 +321,7 @@ class RealtimePeer(ProxyPeer):
                     return
                 if tid is None:
                     if writer is None:
-                        buffers.append(msg)
+                        buffers.extend(msg)
                     else:
                         asyncio.ensure_future(safe_write(writer, msg))
                     return
@@ -333,8 +333,8 @@ class RealtimePeer(ProxyPeer):
             reader, writer = await asyncio.open_connection(host, port)
             log(transport.signal_sid, f'dc {transport.get_label()} connected to {host}:{port}')
 
-            await safe_write_buffers(writer, buffers)
-            asyncio.ensure_future(relay_reader_to_dc(reader, transport, tid))
+            await safe_write(writer, buffers)
+            await relay_reader_to_dc(reader, transport)
         except Exception:
             pass
         finally:
@@ -540,6 +540,7 @@ class RealtimePeer(ProxyPeer):
 
             await relay_reader_to_dc(req.reader, transport)
         finally:
+            safe_close(req.writer)
             transport.close()
             # make request done
             if not req.future.done():
