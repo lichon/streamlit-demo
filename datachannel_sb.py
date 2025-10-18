@@ -540,7 +540,6 @@ class RealtimePeer(ProxyPeer):
 
             await relay_reader_to_dc(req.reader, transport)
         finally:
-            safe_close(req.writer)
             transport.close()
             # make request done
             if not req.future.done():
