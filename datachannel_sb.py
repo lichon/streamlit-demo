@@ -816,7 +816,7 @@ class HttpServer:
 
         # random switch between realtime and http peer
         self.switch_peer = not self.switch_peer
-        peer = self.realtime_peer# if self.switch_peer else self.http_peer
+        peer = self.realtime_peer if self.switch_peer else self.http_peer
         if peer.connected():
             req = LocalRequest(
                 method.upper(),
