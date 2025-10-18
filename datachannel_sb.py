@@ -558,7 +558,7 @@ class RealtimePeer(ProxyPeer):
                 elif req.method == 'close':
                     break
                 else:
-                    await self.handle_http(req)
+                    asyncio.create_task(self.handle_http(req))
             log(self.peer_id, f'eventloop exit')
         except Exception as e:
             log(self.peer_id, f'eventloop error: {e}')
