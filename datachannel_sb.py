@@ -25,7 +25,7 @@ RELAY_BUFFER_SIZE = 4096
 BOOTSTRAP_LABEL = 'bootstrap'
 TRANSPORT_LABEL = 'transport'
 
-logger = logging.getLogger('proxypeer')
+logger = logging.getLogger('tunnel')
 
 
 class ProxyPeer:
@@ -342,27 +342,27 @@ class RealtimePeer(ProxyPeer):
             safe_close(writer)
 
     ''' Create a new RTCPeerConnection with a bootstrap DataChannel '''
-    async def create_peer(self, tid: str, opened=None, closed=None):
-        await safe_close_peer(self.peers.get(tid, None))
-        log(tid, f'create new peer')
-        self.peers[tid] = pc = RTCPeerConnection(DEFAULT_CONFIG)
+    async def create_peer(self, peer_id: str, opened=None, closed=None):
+        await safe_close_peer(self.peers.get(peer_id, None))
+        log(peer_id, f'create new peer')
+        self.peers[peer_id] = pc = RTCPeerConnection(DEFAULT_CONFIG)
 
         @pc.on('connectionstatechange')
         def on_connection_state():
-            log(tid, f'{pc.connectionState}')
+            log(peer_id, f'{pc.connectionState}')
             if pc.connectionState == 'failed':
                 asyncio.ensure_future(safe_close_peer(pc))
             elif pc.connectionState == 'closed':
-                self.peers.pop(tid, None)
+                self.peers.pop(peer_id, None)
 
         def on_open():
-            log(tid, f'dc bootstrap opened')
+            log(peer_id, f'dc bootstrap opened')
             if opened:
                 opened()
 
         def on_close():
-            log(tid, f'dc bootstrap closed')
-            self.peers.pop(tid, None)
+            log(peer_id, f'dc bootstrap closed')
+            self.peers.pop(peer_id, None)
             if closed:
                 closed()
 
@@ -393,11 +393,11 @@ class RealtimePeer(ProxyPeer):
 
     async def handle_channel_request(self, req: ChannelCommand):
         if req.method == 'ping':
-            self._send_channel_command(ChannelCommand(req.tid, body='pong'))
+            await self.send_channel_command(ChannelCommand(req.tid, body='pong'))
         elif req.method == 'connect':
             # TODO handle new peer request in random delay
             res = await self.new_server_peer(req)
-            self._send_channel_command(res)
+            await self.send_channel_command(res)
 
     def _recv_channel_command(self, msg):
         try:
@@ -424,7 +424,7 @@ class RealtimePeer(ProxyPeer):
         except Exception as e:
             log(self.peer_id, f'handle incoming message error {e}')
 
-    def _send_channel_command(self, req: ChannelCommand, timeout: int = 30):
+    async def send_channel_command(self, req: ChannelCommand, timeout: int = 30):
         if req is None:
             return
         if not self.connected():
@@ -432,7 +432,7 @@ class RealtimePeer(ProxyPeer):
             return
 
         msg = ChannelMessage(self.peer_id, 'command', req.asdict(), str(time.time()))
-        asyncio.ensure_future(self.channel.send_broadcast('command', msg.asdict()))
+        await self.channel.send_broadcast('command', msg.asdict())
 
     async def channel_request(self, req: ChannelCommand, timeout: int = 30) -> ChannelCommand:
         if not req.tid:
@@ -441,7 +441,7 @@ class RealtimePeer(ProxyPeer):
         self._outgoing_requests[req.tid] = req
         req.future = asyncio.Future()
         try:
-            self._send_channel_command(req)
+            await self.send_channel_command(req)
             await asyncio.wait_for(req.future, timeout)
             return req.future.result()
         except Exception as e:
@@ -455,6 +455,7 @@ class RealtimePeer(ProxyPeer):
 
     async def new_client_peer(self, req: LocalRequest):
         tid = req.tid
+        peer_id = self.peer_id
 
         def on_open():
             def on_new_dc_open():
@@ -470,7 +471,7 @@ class RealtimePeer(ProxyPeer):
             if not req.future.done():
                 req.future.set_exception(Exception('peer closed'))
 
-        peer: RTCPeerConnection = self.peers.get(tid, None)
+        peer: RTCPeerConnection = self.peers.get(peer_id, None)
         if peer:
             if peer.connectionState == 'connected':
                 on_open()
@@ -479,26 +480,26 @@ class RealtimePeer(ProxyPeer):
             return
 
         # create new peer connection
-        peer = await self.create_peer(tid, opened=on_open, closed=on_close)
-        res = await self.channel_request(ChannelCommand(tid=tid, method='connect', body={
+        peer = await self.create_peer(peer_id, opened=on_open, closed=on_close)
+        res = await self.channel_request(ChannelCommand(method='connect', body={
             'offer': peer.localDescription.sdp, 'ice': []
         }))
 
         if not res:
             req.future.set_result(None)
-            log(self.peer_id, f'channel request had no response, close peer')
+            log(tid, f'channel request had no response, close peer')
             await safe_close_peer(peer)
             return
 
         if res.error:
             req.future.set_exception(Exception(res.error))
-            log(self.peer_id, f'channel request error {res.error}, close peer')
+            log(tid, f'channel request error {res.error}, close peer')
             await safe_close_peer(peer)
             return
 
         if not res.body or 'answer' not in res.body:
             req.future.set_exception(Exception('invalid response'))
-            log(self.peer_id, f'channel request had invalid response, close peer')
+            log(tid, f'channel request had invalid response, close peer')
             await safe_close_peer(peer)
             return
 
@@ -675,15 +676,16 @@ class HttpPeer(ProxyPeer):
                 ext = await reader.read(8)
                 payload_len = int.from_bytes(ext, 'big')
 
+            payload = bytearray()
             if mask:
                 mask_key = await reader.read(4)
                 encoded = await reader.read(payload_len)
-                payload = bytes(b ^ mask_key[i % 4] for i, b in enumerate(encoded))
+                payload.extend(bytes(b ^ mask_key[i % 4] for i, b in enumerate(encoded)))
             else:
-                payload = await reader.read(payload_len)
+                payload.extend(await reader.read(payload_len))
 
-            if len(payload) < payload_len:
-                payload += await reader.read(payload_len - len(payload))
+            while len(payload) < payload_len:
+                payload.extend(await reader.read(payload_len - len(payload)))
 
             if (len(payload) < payload_len):
                 log(tag, f'ws->tcp read incomplete payload {len(payload)}/{payload_len}')
@@ -698,6 +700,7 @@ class HttpPeer(ProxyPeer):
 
 
     async def do_request(self, req: LocalRequest):
+        trace_tag = f'{req.tid} {req.uri}'
         headers = await req.reader.readuntil(b'\r\n\r\n')
         if req.method == 'CONNECT':
             # open connection to remote http endpoint
@@ -724,14 +727,15 @@ class HttpPeer(ProxyPeer):
             http200 = b'HTTP/1.1 200 Connection established\r\n\r\n'
             await safe_write(req.writer, http200)
 
-            asyncio.ensure_future(self.safe_tcp_to_ws(req.reader, writer, self.endpoint_cname))
-            await self.safe_ws_to_tcp(reader, req.writer, self.endpoint_cname)
+            asyncio.ensure_future(self.safe_tcp_to_ws(req.reader, writer, trace_tag))
+            await self.safe_ws_to_tcp(reader, req.writer, trace_tag)
         elif req.method == 'GET' and req.uri.startswith('/connect/'):
             netloc = req.uri.lstrip('/connect/')
             host, port = netloc.split(':')
             if not host or not port:
                 _reject(req, 'Invalid host')
 
+            trace_tag = f'{req.tid} {netloc}'
             # parse websocket key from headers, and calculate accept key
             ws_key = None
             header_lines = headers.decode().split('\r\n')
@@ -771,6 +775,8 @@ class HttpServer:
         self.switch_peer = False
 
     async def handle_request(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
+        client_addr, client_port = writer.get_extra_info('peername')
+        tag = f'{client_addr}:{client_port}'
         try:
             request_line = (await reader.readline()).decode()
             method, uri, _ = request_line.split()
@@ -779,8 +785,7 @@ class HttpServer:
             safe_close(writer)
             return
 
-        self.logger.info(f'received {method} {uri}')
-        client_peername = writer.get_extra_info('peername')
+        self.logger.info(f'{tag} received {method} {uri}')
         # endpoint readiness check
         if method == 'GET' and uri == '/':
             if self.realtime_peer.connected():
@@ -821,14 +826,14 @@ class HttpServer:
             req = LocalRequest(
                 method.upper(),
                 uri,
-                peer.peer_id,
+                tag,
                 reader,
                 writer
             )
             await peer.do_request(req)
-            self.logger.info(f'done {method} {uri}')
+            self.logger.info(f'{tag} done {method} {uri}')
         else:
-            self.logger.info(f'rejected {method} {uri}')
+            self.logger.info(f'{tag} rejected {method} {uri}')
             writer.write(b'HTTP/1.1 500 Not ready\r\n\r\n')
             safe_close(writer)
 
