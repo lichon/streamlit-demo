@@ -695,7 +695,12 @@ class HttpPeer(ProxyPeer):
         headers = await req.reader.readuntil(b'\r\n\r\n')
         if req.method == 'CONNECT':
             # open connection to remote http endpoint
-            reader, writer = await asyncio.open_connection(self.endpoint_cname, 443, ssl=True)
+            try:
+                reader, writer = await asyncio.open_connection(self.endpoint_cname, 443, ssl=True)
+            except Exception as e:
+                self.endpoint_cname = self._get_endpoint_cname()
+                _reject(req, 'Connection failed')
+                return
 
             # relay connect request to remote endpoint
             req_headers = (
@@ -719,7 +724,7 @@ class HttpPeer(ProxyPeer):
             netloc = req.uri.lstrip('/connect/')
             host, port = netloc.split(':')
             if not host or not port:
-                _reject(None, 'Invalid host')
+                _reject(req, 'Invalid host')
 
             # parse websocket key from headers, and calculate accept key
             ws_key = None
