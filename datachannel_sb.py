@@ -226,14 +226,15 @@ class DataChannelPair:
             self.sender.send(dumps)
 
 
-def log(trace_id: str, msg: str):
-    logger.info(msg=f'{trace_id} {msg}')
+def log(trace_tag: str, msg: str):
+    logger.info(msg=f'{trace_tag} {msg}')
 
 
 def _reject(request: LocalRequest, msg: str = 'Not ready'):
     if request.writer:
         request.writer.write(f'HTTP/1.1 500 {msg}\r\n\r\n'.encode())
         safe_close(request.writer)
+    log(f'{request.tid} {request.uri}', f'rejected: {msg}')
 
 
 async def safe_close_peer(pc: RTCPeerConnection):
@@ -530,6 +531,10 @@ class RealtimePeer(ProxyPeer):
                 return
             asyncio.ensure_future(safe_write(req.writer, msg))
 
+        @transport.receiver.on('close')
+        def on_close():
+            safe_close(req.writer)
+
         try:
             if req.method == 'CONNECT':
                 http200 = b'HTTP/1.1 200 Connection established\r\n\r\n'
@@ -699,19 +704,14 @@ class HttpPeer(ProxyPeer):
         safe_close(writer)
         log(tag, 'ws->tcp relays done')
 
-    async def do_request(self, req: LocalRequest, timeout: int = 60):
+    async def do_connect(self, req: LocalRequest, timeout):
         trace_tag = f'{req.tid} {req.uri}'
-        headers = await req.reader.readuntil(b'\r\n\r\n')
-        if req.method == 'CONNECT':
+        reader, writer = None, None
+        try:
+            # ignore all headers
+            await asyncio.wait_for(req.reader.readuntil(b'\r\n\r\n'), timeout=timeout)
             # open connection to remote http endpoint
-            try:
-                reader, writer = await asyncio.open_connection(
-                    self.endpoint_cname, 443, ssl=True, timeout=timeout
-                )
-            except Exception as e:
-                self.endpoint_cname = self._get_endpoint_cname()
-                _reject(req, 'Connection failed')
-                return
+            reader, writer = await asyncio.open_connection(self.endpoint_cname, 443, ssl=True)
 
             # relay connect request to remote endpoint
             req_headers = (
@@ -723,7 +723,11 @@ class HttpPeer(ProxyPeer):
                 f'Upgrade: websocket\r\n\r\n'
             )
             await safe_write(writer, req_headers.encode())
-            await reader.readuntil(b'\r\n\r\n')  # read http101 response
+            http101 = await asyncio.wait_for(reader.readuntil(b'\r\n\r\n'), 10)
+            if not http101.decode().startswith('HTTP/1.1 101'):
+                _reject(req, 'Server failed')
+                safe_close(writer)
+                return
 
             # remote connect success, reply http200 to client
             http200 = b'HTTP/1.1 200 Connection established\r\n\r\n'
@@ -731,7 +735,16 @@ class HttpPeer(ProxyPeer):
 
             asyncio.ensure_future(self.safe_tcp_to_ws(req.reader, writer, trace_tag))
             await self.safe_ws_to_tcp(reader, req.writer, trace_tag)
-        elif req.method == 'GET' and req.uri.startswith('/connect/'):
+        except Exception as e:
+            log(trace_tag, f'request CONNECT failed: {e}')
+            self.endpoint_cname = self._get_endpoint_cname()
+            _reject(req, 'Connection failed')
+            safe_close(writer)
+
+    async def do_websocket(self, req: LocalRequest, timeout: int = 60):
+        trace_tag = f'{req.tid} {req.uri}'
+        try:
+            headers = await asyncio.wait_for(req.reader.readuntil(b'\r\n\r\n'), timeout=timeout)
             netloc = req.uri.lstrip('/connect/')
             host, port = netloc.split(':')
             if not host or not port:
@@ -763,6 +776,15 @@ class HttpPeer(ProxyPeer):
             log(self.peer_id, f'connected to {host}:{port}')
             asyncio.ensure_future(self.safe_ws_to_tcp(req.reader, writer, netloc))
             await self.safe_tcp_to_ws(reader, req.writer, netloc)
+        except Exception as e:
+            log(trace_tag, f'request WEBSOCKET failed: {e}')
+            _reject(req, 'Connection failed')
+
+    async def do_request(self, req: LocalRequest, timeout: int = 10):
+        if req.method == 'CONNECT':
+            await self.do_connect(req, timeout)
+        elif req.method == 'GET' and req.uri.startswith('/connect/'):
+            await self.do_websocket(req, timeout)
         else:
             _reject(req, 'Not supported')
 
@@ -787,7 +809,10 @@ class HttpServer:
             safe_close(writer)
             return
 
-        self.logger.info(f'{tag} received {method} {uri}')
+        # random switch between realtime and http peer
+        self.switch_peer = not self.switch_peer
+        peer = self.realtime_peer if self.switch_peer else self.http_peer
+        self.logger.info(f'{tag} received {method} {uri} by {peer.peer_id}')
         # endpoint readiness check
         if method == 'GET' and uri == '/':
             if self.realtime_peer.connected():
@@ -821,19 +846,21 @@ class HttpServer:
                 safe_close(writer)
                 return
 
-        # random switch between realtime and http peer
-        self.switch_peer = not self.switch_peer
-        peer = self.realtime_peer if self.switch_peer else self.http_peer
         if peer.connected():
-            req = LocalRequest(
-                method.upper(),
-                uri,
-                tag,
-                reader,
-                writer
-            )
-            await peer.do_request(req, timeout=None)
-            self.logger.info(f'{tag} done {method} {uri}')
+            try:
+                req = LocalRequest(
+                    method.upper(),
+                    uri,
+                    tag,
+                    reader,
+                    writer
+                )
+                await peer.do_request(req, timeout=300)
+                self.logger.info(f'{tag} done {method} {uri}')
+            except Exception as e:
+                self.logger.error(f'{tag} error {method} {uri}: {e}')
+                writer.write(b'HTTP/1.1 500 Internal Server Error\r\n\r\n')
+                safe_close(writer)
         else:
             self.logger.info(f'{tag} rejected {method} {uri}')
             writer.write(b'HTTP/1.1 500 Not ready\r\n\r\n')
