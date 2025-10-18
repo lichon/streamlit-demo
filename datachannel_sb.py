@@ -336,6 +336,9 @@ class RealtimePeer(ProxyPeer):
             asyncio.ensure_future(relay_reader_to_dc(reader, transport, tid))
         except Exception:
             pass
+        finally:
+            transport.close()
+            safe_close(writer)
 
     ''' Create a new RTCPeerConnection with a bootstrap DataChannel '''
     async def create_peer(self, tid: str, opened=None, closed=None):
@@ -520,17 +523,21 @@ class RealtimePeer(ProxyPeer):
                 return
             asyncio.ensure_future(safe_write(req.writer, msg))
 
-        if req.method == 'CONNECT':
-            http200 = b'HTTP/1.1 200 Connection established\r\n\r\n'
-            asyncio.ensure_future(safe_write(req.writer, http200))
-        else:
-            req_line = f'{req.method} {req.uri} HTTP/1.1\r\n'.encode()
-            transport.send(req_line)
-            transport.send(headers)
+        try:
+            if req.method == 'CONNECT':
+                http200 = b'HTTP/1.1 200 Connection established\r\n\r\n'
+                asyncio.ensure_future(safe_write(req.writer, http200))
+            else:
+                req_line = f'{req.method} {req.uri} HTTP/1.1\r\n'.encode()
+                transport.send(req_line)
+                transport.send(headers)
 
-        await relay_reader_to_dc(req.reader, transport)
-        # make request done
-        req.future.set_result(None)
+            await relay_reader_to_dc(req.reader, transport)
+        finally:
+            transport.close()
+            # make request done
+            if not req.future.done():
+                req.future.set_result(None)
 
     async def start_event_loop(self):
         log(self.peer_id, f'eventloop start')
@@ -557,7 +564,7 @@ class RealtimePeer(ProxyPeer):
             await asyncio.wait_for(request.future, timeout)
             return request.future.result()
         except Exception as e:
-            log(self.peer_id, f'{request} error {e.__class__.__name__} {e}')
+            log(self.peer_id, f'{request.method} error {e.__class__.__name__} {e}')
             return None
 
     def connected(self):
@@ -632,6 +639,17 @@ class HttpPeer(ProxyPeer):
         safe_close(writer)
         log(tag, 'tcp->ws relays done')
 
+    async def safe_ws_to_tcp(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter, tag: str):
+        try:
+            await self.relay_ws_to_tcp(reader, writer, tag)
+        except Exception as e:
+            log(tag, f'ws->tcp relay error {e}')
+
+    async def safe_tcp_to_ws(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter, tag: str):
+        try:
+            await self.relay_tcp_to_ws(reader, writer, tag)
+        except Exception as e:
+            log(tag, f'tcp->ws relay error {e}')
 
     async def relay_ws_to_tcp(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter, tag: str):
         ''' Relay data from ws StreamReader to StreamWriter '''
@@ -695,8 +713,8 @@ class HttpPeer(ProxyPeer):
             http200 = b'HTTP/1.1 200 Connection established\r\n\r\n'
             await safe_write(req.writer, http200)
 
-            asyncio.ensure_future(self.relay_tcp_to_ws(req.reader, writer, self.endpoint_cname))
-            await self.relay_ws_to_tcp(reader, req.writer, self.endpoint_cname)
+            asyncio.ensure_future(self.safe_tcp_to_ws(req.reader, writer, self.endpoint_cname))
+            await self.safe_ws_to_tcp(reader, req.writer, self.endpoint_cname)
         elif req.method == 'GET' and req.uri.startswith('/connect/'):
             netloc = req.uri.lstrip('/connect/')
             host, port = netloc.split(':')
@@ -726,8 +744,8 @@ class HttpPeer(ProxyPeer):
             await safe_write(req.writer, response.encode())
 
             log(self.peer_id, f'connected to {host}:{port}')
-            asyncio.ensure_future(self.relay_ws_to_tcp(req.reader, writer, netloc))
-            await self.relay_tcp_to_ws(reader, req.writer, netloc)
+            asyncio.ensure_future(self.safe_ws_to_tcp(req.reader, writer, netloc))
+            await self.safe_tcp_to_ws(reader, req.writer, netloc)
         else:
             _reject(req, 'Not supported')
 
@@ -737,8 +755,9 @@ class HttpServer:
 
     def __init__(self, endpoint: ProxyPeer):
         self.logger = logging.getLogger('proxy')
-        self.endpoint = endpoint
+        self.realtime_peer = endpoint
         self.http_peer = HttpPeer()
+        self.switch_peer = False
 
     async def handle_request(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
         try:
@@ -750,10 +769,10 @@ class HttpServer:
             return
 
         self.logger.info(f'received {method} {uri}')
-        # client_peername = writer.get_extra_info('peername')
+        client_peername = writer.get_extra_info('peername')
         # endpoint readiness check
         if method == 'GET' and uri == '/':
-            if self.endpoint.connected():
+            if self.realtime_peer.connected():
                 writer.write(b'HTTP/1.1 200 OK\r\n\r\n')
             else:
                 writer.write(b'HTTP/1.1 500 Not ready\r\n\r\n')
@@ -761,10 +780,11 @@ class HttpServer:
             return
         # custom testing
         if method == 'GET' and uri == '/ping':
-            res = await self.endpoint.do_request(LocalRequest('ping'))
+            res = await self.realtime_peer.do_request(LocalRequest('ping'))
             writer.write(f'HTTP/1.1 200 {res}\r\n\r\n'.encode())
             safe_close(writer)
             return
+        # proxy over websocket
         if method == 'GET' and uri.startswith('/connect/'):
             await self.http_peer.do_request(LocalRequest(
                 method,
@@ -783,16 +803,18 @@ class HttpServer:
                 safe_close(writer)
                 return
 
-        # request new dc
-        if self.endpoint and self.endpoint.connected():
+        # random switch between realtime and http peer
+        self.switch_peer = not self.switch_peer
+        peer = self.realtime_peer if self.switch_peer else self.http_peer
+        if peer.connected():
             req = LocalRequest(
                 method.upper(),
                 uri,
-                self.endpoint.peer_id,
+                peer.peer_id,
                 reader,
                 writer
             )
-            await self.endpoint.do_request(req)
+            await peer.do_request(req)
             self.logger.info(f'done {method} {uri}')
         else:
             self.logger.info(f'rejected {method} {uri}')
@@ -804,13 +826,13 @@ class HttpServer:
         addr = server.sockets[0].getsockname()
         self.logger.info(f'Local server running on {addr[0]}:{addr[1]}')
 
-        await self.endpoint.start()
+        await self.realtime_peer.start()
         async with server:
             await server.serve_forever()
 
     async def stop(self):
-        if self.endpoint:
-            await self.endpoint.stop()
+        if self.realtime_peer:
+            await self.realtime_peer.stop()
 
 
 async def main():
