@@ -41,7 +41,7 @@ class ProxyPeer:
     def connected(self):
         return True
 
-    async def do_request(self):
+    async def do_request(self, req: 'LocalRequest', timeout: int = 60):
         pass
 
 
@@ -564,14 +564,15 @@ class RealtimePeer(ProxyPeer):
         except Exception as e:
             log(self.peer_id, f'eventloop error: {e}')
 
-    async def do_request(self, request: LocalRequest, timeout: int = 60):
-        request.future = asyncio.Future()
-        self._queue.put_nowait(request)
+    async def do_request(self, req: LocalRequest, timeout: int = 60):
+        trace_tag = f'{req.tid} {req.uri}'
+        req.future = asyncio.Future()
+        self._queue.put_nowait(req)
         try:
-            await asyncio.wait_for(request.future, timeout)
-            return request.future.result()
+            await asyncio.wait_for(req.future, timeout)
+            return req.future.result()
         except Exception as e:
-            log(self.peer_id, f'{request.method} error {e.__class__.__name__} {e}')
+            log(trace_tag, f'request {req.method} error {e.__class__.__name__} {e}')
             return None
 
     def connected(self):
@@ -698,14 +699,15 @@ class HttpPeer(ProxyPeer):
         safe_close(writer)
         log(tag, 'ws->tcp relays done')
 
-
-    async def do_request(self, req: LocalRequest):
+    async def do_request(self, req: LocalRequest, timeout: int = 60):
         trace_tag = f'{req.tid} {req.uri}'
         headers = await req.reader.readuntil(b'\r\n\r\n')
         if req.method == 'CONNECT':
             # open connection to remote http endpoint
             try:
-                reader, writer = await asyncio.open_connection(self.endpoint_cname, 443, ssl=True)
+                reader, writer = await asyncio.open_connection(
+                    self.endpoint_cname, 443, ssl=True, timeout=timeout
+                )
             except Exception as e:
                 self.endpoint_cname = self._get_endpoint_cname()
                 _reject(req, 'Connection failed')
@@ -769,7 +771,7 @@ class HttpServer:
     ''' http proxy '''
 
     def __init__(self, endpoint: ProxyPeer):
-        self.logger = logging.getLogger('proxy')
+        self.logger = logging.getLogger('http')
         self.realtime_peer = endpoint
         self.http_peer = HttpPeer()
         self.switch_peer = False
@@ -830,7 +832,7 @@ class HttpServer:
                 reader,
                 writer
             )
-            await peer.do_request(req)
+            await peer.do_request(req, timeout=None)
             self.logger.info(f'{tag} done {method} {uri}')
         else:
             self.logger.info(f'{tag} rejected {method} {uri}')
