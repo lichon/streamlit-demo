@@ -306,12 +306,12 @@ class RealtimePeer(ProxyPeer):
         self.peers: dict[str, RTCPeerConnection] = {}
 
     async def relay_server_handler(self, transport: DataChannelPair, netloc: str, tid: str = None):
+        writer = None
         try:
             host, port = netloc.split(':')
             if not host or not port:
                 raise RuntimeError('invalid label')
 
-            writer = None
             buffers = []
 
             @transport.receiver.on('message')
