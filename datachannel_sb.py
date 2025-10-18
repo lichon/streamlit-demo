@@ -304,6 +304,7 @@ class RealtimePeer(ProxyPeer):
         self.client: AsyncClient = None
         self.channel: AsyncRealtimeChannel = None
         self.peers: dict[str, RTCPeerConnection] = {}
+        self._peers_lock = asyncio.Lock()
 
     async def relay_server_handler(self, transport: DataChannelPair, netloc: str, tid: str = None):
         writer = None
@@ -342,8 +343,17 @@ class RealtimePeer(ProxyPeer):
 
     ''' Create a new RTCPeerConnection with a bootstrap DataChannel '''
     async def create_peer(self, tid: str, opened=None, closed=None):
-        # close old peer
         await safe_close_peer(self.peers.get(tid, None))
+        log(tid, f'create new peer')
+        self.peers[tid] = pc = RTCPeerConnection(DEFAULT_CONFIG)
+
+        @pc.on('connectionstatechange')
+        def on_connection_state():
+            log(tid, f'{pc.connectionState}')
+            if pc.connectionState == 'failed':
+                asyncio.ensure_future(safe_close_peer(pc))
+            elif pc.connectionState == 'closed':
+                self.peers.pop(tid, None)
 
         def on_open():
             log(tid, f'dc bootstrap opened')
@@ -356,29 +366,20 @@ class RealtimePeer(ProxyPeer):
             if closed:
                 closed()
 
-        log(tid, f'create new peer {tid}')
-        self.peers[tid] = pc = RTCPeerConnection(DEFAULT_CONFIG)
-
-        @pc.on('connectionstatechange')
-        def on_connection_state():
-            log(tid, f'{pc.connectionState}')
-            if pc.connectionState == 'failed':
-                asyncio.ensure_future(safe_close_peer(pc))
-            elif pc.connectionState == 'closed':
-                self.peers.pop(tid, None)
-
-        dc = pc.createDataChannel('bootstrap')
+        dc = pc.createDataChannel(BOOTSTRAP_LABEL)
         dc.once('open', on_open)
         dc.once('close', on_close)
 
         await pc.setLocalDescription(await pc.createOffer())
         return pc
 
-    async def handle_p2p_connect(self, req: ChannelCommand):
+    async def new_server_peer(self, req: ChannelCommand):
         pc = await self.create_peer(req.tid)
 
         @pc.on('datachannel')
         def on_datachannel(dc: RTCDataChannel):
+            if dc.label == BOOTSTRAP_LABEL:
+                return
             p2p_transport = DataChannelPair.new_p2p(req.tid, dc)
             asyncio.create_task(self.relay_server_handler(p2p_transport, dc.label))
 
@@ -390,12 +391,12 @@ class RealtimePeer(ProxyPeer):
             req.body['offer'].replace('a=setup:actpass', 'a=setup:passive'), 'answer'))
         return res
 
-    async def handle_incoming_request(self, req: ChannelCommand):
+    async def handle_channel_request(self, req: ChannelCommand):
         if req.method == 'ping':
             self._send_channel_command(ChannelCommand(req.tid, body='pong'))
         elif req.method == 'connect':
             # TODO handle new peer request in random delay
-            res = await self.handle_p2p_connect(req)
+            res = await self.new_server_peer(req)
             self._send_channel_command(res)
 
     def _recv_channel_command(self, msg):
@@ -419,7 +420,7 @@ class RealtimePeer(ProxyPeer):
                 return
 
             # handle incoming request
-            asyncio.ensure_future(self.handle_incoming_request(cmd))
+            asyncio.ensure_future(self.handle_channel_request(cmd))
         except Exception as e:
             log(self.peer_id, f'handle incoming message error {e}')
 
@@ -449,12 +450,17 @@ class RealtimePeer(ProxyPeer):
         finally:
             self._outgoing_requests.pop(req.tid, None)
 
-    async def create_p2p_transport(self, req: LocalRequest):
+    async def new_transport(self, req: LocalRequest):
+        return await self.new_client_peer(req)
+
+    async def new_client_peer(self, req: LocalRequest):
         tid = req.tid
 
         def on_open():
             def on_new_dc_open():
                 log(tid, f'dc {new_dc.label} opened')
+                if req.future.done():
+                    return
                 req.future.set_result(DataChannelPair.new_p2p(tid, new_dc))
 
             new_dc = peer.createDataChannel(req.uri)
@@ -468,7 +474,7 @@ class RealtimePeer(ProxyPeer):
         if peer:
             if peer.connectionState == 'connected':
                 on_open()
-            else:
+            elif not req.future.done():
                 req.future.set_exception(Exception(f'peer state {peer.connectionState}'))
             return
 
@@ -546,13 +552,13 @@ class RealtimePeer(ProxyPeer):
             while True:
                 req = await self._queue.get()
                 if req.method == 'transport':
-                    asyncio.create_task(self.create_p2p_transport(req))
+                    asyncio.create_task(self.new_transport(req))
                 elif req.method == 'ping':
                     asyncio.create_task(self.ping_test(req))
                 elif req.method == 'close':
                     break
                 else:
-                    asyncio.create_task(self.handle_http(req))
+                    await self.handle_http(req)
             log(self.peer_id, f'eventloop exit')
         except Exception as e:
             log(self.peer_id, f'eventloop error: {e}')
@@ -810,7 +816,7 @@ class HttpServer:
 
         # random switch between realtime and http peer
         self.switch_peer = not self.switch_peer
-        peer = self.realtime_peer if self.switch_peer else self.http_peer
+        peer = self.realtime_peer# if self.switch_peer else self.http_peer
         if peer.connected():
             req = LocalRequest(
                 method.upper(),
