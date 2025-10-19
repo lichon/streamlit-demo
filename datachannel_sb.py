@@ -801,6 +801,7 @@ class HttpServer:
     async def handle_request(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
         client_addr, client_port = writer.get_extra_info('peername')
         tag = f'{client_addr}:{client_port}'
+        self.logger.info(f'{tag} new connection')
         try:
             request_line = (await reader.readline()).decode()
             method, uri, _ = request_line.split()
