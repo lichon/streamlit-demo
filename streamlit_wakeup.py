@@ -32,6 +32,7 @@ async def main():
             '--no-sandbox',
             '--disable-dev-shm-usage',
             '--disable-gpu',
+            '--single-process',
             '--window-size=1920,1080'
         ])
         page = await browser.new_page()
