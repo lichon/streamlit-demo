@@ -2,6 +2,7 @@ import streamlit as st
 import subprocess
 import os
 
+from streamlit_wakeup import keepAlive
 from peertunnel import peerTunnel
 from cloudflared import cloudflared
 from streamlit_ttyd import get_ttyd
@@ -35,6 +36,7 @@ def terminal(
     return ttydproc, port
 
 
+keepAlive(secrets=st.secrets)
 
 # start the peer tunnel
 peerTunnel(secrets=st.secrets)
@@ -58,4 +60,7 @@ iframe(tty_url, height=700)
 # info on ttyd port
 st.text(f"ttyd server is running at : {tty_url}")
 st.text(f"peer server is running at : {peer_url}")
-st.text(f"peer pid {peerTunnel.proc.pid} {'alive' if peerTunnel.is_alive() else 'dead'}")
+st.text(
+    f"peer pid {peerTunnel.proc.pid} {'alive' if peerTunnel.is_alive() else 'dead'} "
+    f"playwright pid {keepAlive.proc.pid} {'alive' if keepAlive.is_alive() else 'dead'}"
+)

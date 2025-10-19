@@ -13,7 +13,6 @@ class PeerTunnel:
         secrets: dict = None,
     ) -> None:
         if not self.is_alive():
-            self.install_deps()
             self.start_tunnel(secrets)
 
         atexit.register(self.proc.terminate)
@@ -21,20 +20,10 @@ class PeerTunnel:
     def terminate(self) -> None:
         if self.proc:
             self.proc.terminate()
-        if self.api_proc:
-            self.api_proc.terminate()
         atexit.unregister(self.proc.terminate)
 
     def is_alive(self) -> bool:
         return self.proc and self.proc.poll() is None
-
-    def install_deps(sefl) -> None:
-        print("Installing peer dependencies...")
-        # pip = subprocess.Popen(
-        #     f"pip install -r peer_requirements.txt",
-        #     shell=True,
-        # )
-        # pip.wait()
 
     def start_tunnel(self, secrets: dict) -> None:
         print("Starting PeerTunnel...")
