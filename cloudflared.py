@@ -68,17 +68,18 @@ class TryCloudflare:
         update_dns: bool = False,
         secrets: dict = None,
     ) -> Urls:
-        info = get_info()
-        info.executable = Path('/tmp') / info.url.split("/")[-1]
-        if not Path(info.executable).exists():
-            info.executable = download(info)
-
         port = int(port)
         if port in self.running:
             urls = self.running[port]
             if verbose:
                 self._print(urls.tunnel, urls.metrics)
             return urls
+
+        self.running[port] = Urls('running', '', None)
+        info = get_info()
+        info.executable = Path('/tmp') / info.url.split("/")[-1]
+        if not Path(info.executable).exists():
+            info.executable = download(info)
 
         args = [
             info.executable,
