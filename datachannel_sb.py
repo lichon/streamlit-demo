@@ -849,6 +849,9 @@ class HttpServer:
                 reader,
                 writer
             ))
+            # recover realtime peer if needed
+            if not self.realtime_peer.connected():
+                await self.realtime_peer.recover()
             return
 
         # https proxy
