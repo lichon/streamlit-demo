@@ -583,21 +583,7 @@ class RealtimePeer(ProxyPeer):
             log(trace_tag, f'request {req.method} error {e.__class__.__name__} {e}')
             return None
 
-    async def recover(self):
-        if self.channel and self.channel.state == 'closed':
-            await self.channel.subscribe()
-            await self.channel.track({
-                'id': self.peer_id,
-                'name': 'RealtimePeer',
-            })
-
-    def connected(self):
-        return self.channel and self.channel.state == 'joined'
-
-    async def start(self):
-        if self.client:
-            return
-        self.client = await acreate_client(supabase_url, supabase_key)
+    async def init_channel(self):
         self.channel = self.client.channel(f'room:{signal_room}:messages')
         self.channel.on_broadcast('command', self._recv_channel_command)
         await self.channel.subscribe()
@@ -605,11 +591,24 @@ class RealtimePeer(ProxyPeer):
             'id': self.peer_id,
             'name': 'RealtimePeer',
         })
+
+    async def recover(self):
+        if self.client and not self.client.get_channels():
+            await self.init_channel()
+
+    def connected(self):
+        return self.channel and self.channel.is_joined
+
+    async def start(self):
+        if self.client:
+            return
+        self.client = await acreate_client(supabase_url, supabase_key)
+        await self.init_channel()
         asyncio.create_task(self.start_event_loop())
 
     async def stop(self):
         if self.client:
-            self.client.remove_all_channels()
+            await self.client.remove_all_channels()
         self._queue.put_nowait(LocalRequest('close'))
         await asyncio.gather(*[peer.close() for peer in self.peers.values()])
 
@@ -826,7 +825,7 @@ class HttpServer:
         # random switch between realtime and http peer
         self.switch_peer = not self.switch_peer
         peer = self.realtime_peer if self.switch_peer else self.http_peer
-        self.logger.info(f'{tag} received {method} {uri} by {peer.peer_id}')
+        self.logger.info(f'{tag} received {method} {uri} by {peer.__class__.__name__}')
         # endpoint readiness check
         if method == 'GET' and uri == '/':
             if self.realtime_peer.connected():
