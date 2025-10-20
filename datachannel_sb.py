@@ -15,6 +15,7 @@ from aiortc import RTCDataChannel, RTCPeerConnection, RTCSessionDescription, RTC
 from supabase import acreate_client, AsyncClient
 from realtime import AsyncRealtimeChannel
 
+hostname = os.environ.get('HOSTNAME', 'Realtime Peer')
 signal_room = os.environ.get('SIGNAL_ROOM', 'default')
 endpoint_domain = os.environ.get('ENDPOINT_DOMAIN', None)
 supabase_key = os.environ.get('SUPABASE_KEY', '')
@@ -589,7 +590,7 @@ class RealtimePeer(ProxyPeer):
         await self.channel.subscribe()
         await self.channel.track({
             'id': self.peer_id,
-            'name': 'RealtimePeer',
+            'name': hostname,
         })
 
     async def recover(self):
@@ -876,7 +877,7 @@ class HttpServer:
                     reader,
                     writer
                 )
-                await peer.do_request(req, timeout=300)
+                await peer.do_request(req, timeout=120)
                 self.logger.info(f'{tag} done {method} {uri}')
             except Exception as e:
                 self.logger.error(f'{tag} error {method} {uri}: {e}')
