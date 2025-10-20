@@ -585,6 +585,7 @@ class RealtimePeer(ProxyPeer):
             return None
 
     async def init_channel(self):
+        self.client = await acreate_client(supabase_url, supabase_key)
         self.channel = self.client.channel(f'room:{signal_room}:messages')
         self.channel.on_broadcast('command', self._recv_channel_command)
         await self.channel.subscribe()
@@ -603,7 +604,6 @@ class RealtimePeer(ProxyPeer):
     async def start(self):
         if self.client:
             return
-        self.client = await acreate_client(supabase_url, supabase_key)
         await self.init_channel()
         asyncio.create_task(self.start_event_loop())
 
