@@ -36,8 +36,6 @@ def terminal(
     return ttydproc, port
 
 
-keepAlive(secrets=st.secrets)
-
 # start the peer tunnel
 peerTunnel(secrets=st.secrets)
 
@@ -49,6 +47,8 @@ peer_url = 'http://localhost:2234'
 
 # streamlit server
 if os.getenv("HOSTNAME") == "streamlit":
+    # start playwright
+    keepAlive(secrets=st.secrets)
     # set dns for cloudflared
     tty_url = cloudflared(1234).tunnel
     peer_url = cloudflared(2234, update_dns=True, secrets=st.secrets).tunnel
