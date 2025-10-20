@@ -720,7 +720,7 @@ class HttpPeer(ProxyPeer):
     async def do_connect(self, req: LocalRequest, timeout):
         trace_tag = f'{req.tid} {req.uri}'
         reader, writer = None, None
-        self.https_port_idx = 0 if self.https_port_idx >= len(self.CF_HTTPS_PORTS) else self.https_port_idx + 1
+        self.https_port_idx = 0 if self.https_port_idx >= len(self.CF_HTTPS_PORTS) - 1 else self.https_port_idx + 1
         https_port = self.CF_HTTPS_PORTS[self.https_port_idx]
         try:
             # ignore all headers
