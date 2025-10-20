@@ -41,6 +41,9 @@ class ProxyPeer:
     def connected(self):
         return True
 
+    async def recover(self):
+        pass
+
     async def do_request(self, req: 'LocalRequest', timeout: int = 60):
         pass
 
@@ -301,7 +304,7 @@ class RealtimePeer(ProxyPeer):
     def __init__(self):
         self._queue: asyncio.Queue = asyncio.Queue()
         self._outgoing_requests: dict[str, ChannelCommand] = {}
-        self.peer_id: str = None
+        self.peer_id = str(uuid.uuid1())
         self.client: AsyncClient = None
         self.channel: AsyncRealtimeChannel = None
         self.peers: dict[str, RTCPeerConnection] = {}
@@ -580,11 +583,20 @@ class RealtimePeer(ProxyPeer):
             log(trace_tag, f'request {req.method} error {e.__class__.__name__} {e}')
             return None
 
+    async def recover(self):
+        if self.channel and self.channel.state == 'closed':
+            await self.channel.subscribe()
+            await self.channel.track({
+                'id': self.peer_id,
+                'name': 'RealtimePeer',
+            })
+
     def connected(self):
         return self.channel and self.channel.state == 'joined'
 
     async def start(self):
-        self.peer_id = str(uuid.uuid1())
+        if self.client:
+            return
         self.client = await acreate_client(supabase_url, supabase_key)
         self.channel = self.client.channel(f'room:{signal_room}:messages')
         self.channel.on_broadcast('command', self._recv_channel_command)
@@ -866,6 +878,8 @@ class HttpServer:
             self.logger.info(f'{tag} rejected {method} {uri}')
             writer.write(b'HTTP/1.1 500 Not ready\r\n\r\n')
             safe_close(writer)
+            # recover peer
+            await peer.recover()
 
     async def start(self, port: int = 1234):
         server = await asyncio.start_server(self.handle_request, port=port)
