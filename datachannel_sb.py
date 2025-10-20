@@ -617,10 +617,12 @@ class HttpPeer(ProxyPeer):
     ''' http peer, use OPTIONS as CONNECT request '''
 
     WS_MAGIC = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11'
+    CF_HTTPS_PORTS = (443,2053,2083,2087,2096,8443)
 
     def __init__(self):
         self.endpoint_cname = self._get_endpoint_cname()
-        self.peer_id = 'http-peer'
+        self.peer_id = str(uuid.uuid1())
+        self.https_port_idx = 0
 
     def _get_endpoint_cname(self):
         ''' get endpoint domain cname '''
@@ -718,12 +720,15 @@ class HttpPeer(ProxyPeer):
     async def do_connect(self, req: LocalRequest, timeout):
         trace_tag = f'{req.tid} {req.uri}'
         reader, writer = None, None
+        self.https_port_idx = 0 if self.https_port_idx >= len(self.CF_HTTPS_PORTS) else self.https_port_idx + 1
+        https_port = self.CF_HTTPS_PORTS[self.https_port_idx]
         try:
             # ignore all headers
             await asyncio.wait_for(req.reader.readuntil(b'\r\n\r\n'), timeout=timeout)
             # open connection to remote http endpoint
-            reader, writer = await asyncio.open_connection(self.endpoint_cname, 443, ssl=True)
+            reader, writer = await asyncio.open_connection(self.endpoint_cname, https_port, ssl=True)
 
+            log(trace_tag, f'connected to {self.endpoint_cname}:{https_port}')
             # relay connect request to remote endpoint
             req_headers = (
                 f'GET /connect/{req.uri} HTTP/1.1\r\n'
@@ -785,7 +790,7 @@ class HttpPeer(ProxyPeer):
             )
             await safe_write(req.writer, response.encode())
 
-            log(self.peer_id, f'connected to {host}:{port}')
+            log(trace_tag, f'connected to {host}:{port}')
             asyncio.ensure_future(self.safe_ws_to_tcp(req.reader, writer, netloc))
             await self.safe_tcp_to_ws(reader, req.writer, netloc)
         except Exception as e:
@@ -845,7 +850,7 @@ class HttpServer:
             await self.http_peer.do_request(LocalRequest(
                 method,
                 uri,
-                self.http_peer.peer_id,
+                tag,
                 reader,
                 writer
             ))
