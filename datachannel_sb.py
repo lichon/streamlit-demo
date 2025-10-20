@@ -739,6 +739,7 @@ class HttpPeer(ProxyPeer):
             if not http101.decode().startswith('HTTP/1.1 101'):
                 _reject(req, 'Server failed')
                 safe_close(writer)
+                self.endpoint_cname = self._get_endpoint_cname()
                 return
 
             # remote connect success, reply http200 to client
