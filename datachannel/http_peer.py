@@ -3,15 +3,13 @@ import base64
 import hashlib
 
 import asyncio
-
 from proxy_peer import ProxyPeer, LocalRequest, log, safe_close, safe_write
-
-RELAY_BUFFER_SIZE = 4096
 
 
 class HttpPeer(ProxyPeer):
     ''' http peer, use OPTIONS as CONNECT request '''
 
+    RELAY_BUFFER_SIZE = 4096
     WS_MAGIC = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11'
     CF_HTTPS_PORTS = (443, 2053, 2083, 2087, 2096, 8443)
 
@@ -37,7 +35,7 @@ class HttpPeer(ProxyPeer):
     async def relay_tcp_to_ws(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter, tag: str):
         ''' Relay data from StreamReader to ws StreamWriter '''
         while not reader.at_eof():
-            payload = await reader.read(RELAY_BUFFER_SIZE)
+            payload = await reader.read(self.RELAY_BUFFER_SIZE)
             if not payload:
                 break
             payload_len = len(payload)
