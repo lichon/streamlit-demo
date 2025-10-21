@@ -44,16 +44,35 @@ def download(info: Info | None = None) -> str:
     return str(excutable)
 
 
-async def patch_dns(api_url, key: str, target: str) -> None:
-    import httpx
+def patch_dns(api_url, api_key: str, target: str) -> None:
+    import json
+    import http.client
+    from urllib.parse import urlparse
+
     fqdn = target.replace("https://", "")
-    async with httpx.AsyncClient() as client:
-        await client.patch(
-            f'{api_url}',
-            json={"content": fqdn},
-            headers={"Authorization": f"Bearer {key}"}
-        )
-        print(f'DNS updated to {fqdn}')
+    parsed_url = urlparse(api_url)
+    body = json.dumps({"content": fqdn})
+
+    if parsed_url.scheme == "https":
+        conn = http.client.HTTPSConnection(parsed_url.hostname, parsed_url.port or 443)
+    else:
+        conn = http.client.HTTPConnection(parsed_url.hostname, parsed_url.port or 80)
+
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json"
+    }
+
+    conn.request(
+        "PATCH",
+        parsed_url.path or "/",
+        body=body,
+        headers=headers
+    )
+    response = conn.getresponse()
+    response.read()  # Consume response to close the connection
+    conn.close()
+    print(f'DNS updated to {fqdn}')
 
 
 class TryCloudflare:
@@ -131,10 +150,7 @@ class TryCloudflare:
 
         self.running[port] = urls
         if update_dns:
-            import asyncio
-            asyncio.run(
-                patch_dns(secrets['dns_api_url'], secrets['dns_api_key'], tunnel_url)
-            )
+            patch_dns(secrets['dns_api_url'], secrets['dns_api_key'], tunnel_url)
         return urls
 
     @staticmethod

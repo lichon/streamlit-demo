@@ -33,7 +33,7 @@ class PeerTunnel:
         env['SUPABASE_KEY'] = secrets["sb_key"]
         env['ENDPOINT_DOMAIN'] = secrets["endpoint_domain"]
         self.proc = subprocess.Popen(
-            [sys.executable, "datachannel_sb.py"],
+            [sys.executable, "datachannel/server.py", "--rtc"],
             shell=False,
             env=env
         )
