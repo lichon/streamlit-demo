@@ -20,10 +20,8 @@ class HttpPeer(ProxyPeer):
         self.https_port_idx = 0
 
     def _get_endpoint_cname(self):
-        endpoint_domain = os.environ.get('ENDPOINT_DOMAIN', 's.lichon.cc')
         ''' get endpoint domain cname '''
-        if not endpoint_domain:
-            return None
+        endpoint_domain = os.environ.get('ENDPOINT_DOMAIN', 'localhost')
         # request dns cname
         try:
             import dns.resolver
@@ -32,7 +30,8 @@ class HttpPeer(ProxyPeer):
                 cname = str(r.target).rstrip('.')
                 log('', f'get_endpoint_cname(dnspython) {cname}')
                 return cname
-        except Exception:
+        except Exception as e:
+            log('', f'get_endpoint_cname(dnspython) error {e}')
             return None
 
     async def relay_tcp_to_ws(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter, tag: str):
@@ -117,14 +116,18 @@ class HttpPeer(ProxyPeer):
         trace_tag = f'{req.tid} {req.uri}'
         reader, writer = None, None
         self.https_port_idx = 0 if self.https_port_idx >= len(self.CF_HTTPS_PORTS) - 1 else self.https_port_idx + 1
-        https_port = self.CF_HTTPS_PORTS[self.https_port_idx]
+        http_port = self.CF_HTTPS_PORTS[self.https_port_idx]
+        http_ssl = True
+        if self.endpoint_cname == 'localhost':
+            http_port = 2234
+            http_ssl = False
         try:
             # ignore all headers
             await asyncio.wait_for(req.reader.readuntil(b'\r\n\r\n'), timeout=timeout)
             # open connection to remote http endpoint
-            reader, writer = await asyncio.open_connection(self.endpoint_cname, https_port, ssl=True)
+            reader, writer = await asyncio.open_connection(self.endpoint_cname, http_port, ssl=http_ssl)
 
-            log(trace_tag, f'connected to {self.endpoint_cname}:{https_port}')
+            log(trace_tag, f'connected to {self.endpoint_cname}:{http_port}')
             # relay connect request to remote endpoint
             req_headers = (
                 f'GET /connect/{req.uri} HTTP/1.1\r\n'
@@ -154,10 +157,10 @@ class HttpPeer(ProxyPeer):
             req.reject('Connection failed')
             safe_close(writer)
 
-    async def ws_accept(self, req: LocalRequest, headers: bytes):
+    async def ws_accept(self, req: LocalRequest, headers: str):
         # parse websocket key from headers, and calculate accept key
         ws_key = None
-        header_lines = headers.decode().split(b'\r\n')
+        header_lines = headers.split('\r\n')
         for line in header_lines:
             if line.lower().startswith('sec-websocket-key:'):
                 ws_key = line.split(':', 1)[1].strip()
@@ -187,7 +190,7 @@ class HttpPeer(ProxyPeer):
 
             reader, writer = await asyncio.open_connection(host, port)
             # remote connect success, reply http101 to client
-            await self.ws_accept(req, headers)
+            await self.ws_accept(req, headers.decode())
 
             log(trace_tag, f'connected to {host}:{port}')
             asyncio.ensure_future(self.safe_ws_to_tcp(req.reader, writer, netloc))

@@ -16,7 +16,11 @@ class HttpServer:
         self.switch_peer = False
 
     async def handle_request(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
-        client_addr, client_port = writer.get_extra_info('peername')
+        peername = writer.get_extra_info('peername')
+        if peername is not None and len(peername) >= 2:
+            client_addr, client_port = peername[:2]
+        else:
+            client_addr, client_port = 'unknown', 0
         tag = f'{client_addr}:{client_port}'
         self.logger.info(f'{tag} new connection')
         try:
