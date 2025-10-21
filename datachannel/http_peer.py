@@ -20,7 +20,7 @@ class HttpPeer(ProxyPeer):
         self.https_port_idx = 0
 
     def _get_endpoint_cname(self):
-        endpoint_domain = os.environ.get('ENDPOINT_DOMAIN', None)
+        endpoint_domain = os.environ.get('ENDPOINT_DOMAIN', 's.lichon.cc')
         ''' get endpoint domain cname '''
         if not endpoint_domain:
             return None
@@ -187,7 +187,7 @@ class HttpPeer(ProxyPeer):
 
             reader, writer = await asyncio.open_connection(host, port)
             # remote connect success, reply http101 to client
-            self.ws_accept(req, headers)
+            await self.ws_accept(req, headers)
 
             log(trace_tag, f'connected to {host}:{port}')
             asyncio.ensure_future(self.safe_ws_to_tcp(req.reader, writer, netloc))

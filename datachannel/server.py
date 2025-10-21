@@ -33,10 +33,11 @@ class HttpServer:
         self.logger.info(f'{tag} received {method} {uri} by {peer.__class__.__name__}')
         # endpoint readiness check
         if method == 'GET' and uri == '/':
-            if self.endpoint.connected():
+            if self.endpoint and self.endpoint.connected():
                 writer.write(b'HTTP/1.1 200 OK\r\n\r\n')
             else:
-                await self.endpoint.recover()
+                if self.endpoint:
+                    await self.endpoint.recover()
                 writer.write(b'HTTP/1.1 500 Not ready\r\n\r\n')
             safe_close(writer)
             return
