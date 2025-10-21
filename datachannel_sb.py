@@ -8,20 +8,13 @@ import os
 import pickle
 import base64
 import hashlib
+import uuid
 
 import asyncio
-import uuid
-from aiortc import RTCDataChannel, RTCPeerConnection, RTCSessionDescription, RTCConfiguration
+from aiortc import RTCDataChannel, RTCPeerConnection, RTCSessionDescription
 from supabase import acreate_client, AsyncClient
 from realtime import AsyncRealtimeChannel
 
-hostname = os.environ.get('HOSTNAME', 'Realtime Peer')
-signal_room = os.environ.get('SIGNAL_ROOM', 'default')
-endpoint_domain = os.environ.get('ENDPOINT_DOMAIN', None)
-supabase_key = os.environ.get('SUPABASE_KEY', '')
-supabase_url = os.environ.get('SUPABASE_URL', '')
-
-DEFAULT_CONFIG = RTCConfiguration()
 RELAY_BUFFER_SIZE = 4096
 BOOTSTRAP_LABEL = 'bootstrap'
 TRANSPORT_LABEL = 'transport'
@@ -241,7 +234,7 @@ def _reject(request: LocalRequest, msg: str = 'Not ready'):
     log(f'{request.tid} {request.uri}', f'rejected: {msg}')
 
 
-async def safe_close_peer(pc: RTCPeerConnection):
+async def safe_close_peer(pc: 'RTCPeerConnection'):
     try:
         if pc:
             await pc.close()
@@ -350,7 +343,7 @@ class RealtimePeer(ProxyPeer):
     async def create_peer(self, peer_id: str, opened=None, closed=None):
         await safe_close_peer(self.peers.get(peer_id, None))
         log(peer_id, f'create new peer')
-        self.peers[peer_id] = pc = RTCPeerConnection(DEFAULT_CONFIG)
+        self.peers[peer_id] = pc = RTCPeerConnection()
 
         @pc.on('connectionstatechange')
         def on_connection_state():
@@ -581,10 +574,15 @@ class RealtimePeer(ProxyPeer):
             await asyncio.wait_for(req.future, timeout)
             return req.future.result()
         except Exception as e:
-            log(trace_tag, f'request {req.method} error {e.__class__.__name__} {e}')
+            log(trace_tag, f'dc {req.method} error {e.__class__.__name__} {e}')
             return None
 
     async def init_channel(self):
+        hostname = os.environ.get('HOSTNAME', 'Realtime Peer')
+        signal_room = os.environ.get('SIGNAL_ROOM', 'default')
+        supabase_key = os.environ.get('SUPABASE_KEY', '')
+        supabase_url = os.environ.get('SUPABASE_URL', '')
+
         self.client = await acreate_client(supabase_url, supabase_key)
         self.channel = self.client.channel(f'room:{signal_room}:messages')
         self.channel.on_broadcast('command', self._recv_channel_command)
@@ -626,6 +624,7 @@ class HttpPeer(ProxyPeer):
         self.https_port_idx = 0
 
     def _get_endpoint_cname(self):
+        endpoint_domain = os.environ.get('ENDPOINT_DOMAIN', None)
         ''' get endpoint domain cname '''
         if not endpoint_domain:
             return None
@@ -759,6 +758,28 @@ class HttpPeer(ProxyPeer):
             _reject(req, 'Connection failed')
             safe_close(writer)
 
+    async def ws_accept(self, req: LocalRequest, headers: bytes):
+        # parse websocket key from headers, and calculate accept key
+        ws_key = None
+        header_lines = headers.decode().split(b'\r\n')
+        for line in header_lines:
+            if line.lower().startswith('sec-websocket-key:'):
+                ws_key = line.split(':', 1)[1].strip()
+                break
+        if not ws_key:
+            _reject(req, 'Invalid key')
+            return
+
+        sec_accept = base64.b64encode(hashlib.sha1((ws_key + self.WS_MAGIC).encode()).digest()).decode()
+        # reply http101 to accept ws
+        response = (
+            'HTTP/1.1 101 Switching Protocols\r\n'
+            'Connection: upgrade\r\n'
+            'Upgrade: websocket\r\n'
+            f'Sec-WebSocket-Accept: {sec_accept}\r\n\r\n'
+        )
+        await safe_write(req.writer, response.encode())
+
     async def do_websocket(self, req: LocalRequest, timeout: int = 60):
         trace_tag = f'{req.tid} {req.uri}'
         try:
@@ -768,28 +789,9 @@ class HttpPeer(ProxyPeer):
             if not host or not port:
                 _reject(req, 'Invalid host')
 
-            trace_tag = f'{req.tid} {netloc}'
-            # parse websocket key from headers, and calculate accept key
-            ws_key = None
-            header_lines = headers.decode().split('\r\n')
-            for line in header_lines:
-                if line.lower().startswith('sec-websocket-key:'):
-                    ws_key = line.split(':', 1)[1].strip()
-                    break
-            if not ws_key:
-                _reject(req, 'Invalid key')
-                return
-            ws_accept = base64.b64encode(hashlib.sha1((ws_key + self.WS_MAGIC).encode()).digest()).decode()
-
             reader, writer = await asyncio.open_connection(host, port)
             # remote connect success, reply http101 to client
-            response = (
-                'HTTP/1.1 101 Switching Protocols\r\n'
-                'Connection: upgrade\r\n'
-                'Upgrade: websocket\r\n'
-                f'Sec-WebSocket-Accept: {ws_accept}\r\n\r\n'
-            )
-            await safe_write(req.writer, response.encode())
+            self.ws_accept(req, headers)
 
             log(trace_tag, f'connected to {host}:{port}')
             asyncio.ensure_future(self.safe_ws_to_tcp(req.reader, writer, netloc))
@@ -814,7 +816,7 @@ class HttpServer:
         self.logger = logging.getLogger('http')
         self.realtime_peer = endpoint
         self.http_peer = HttpPeer()
-        self.switch_peer = False
+        self.use_realtime = False
 
     async def handle_request(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
         client_addr, client_port = writer.get_extra_info('peername')
@@ -828,15 +830,16 @@ class HttpServer:
             safe_close(writer)
             return
 
-        # random switch between realtime and http peer
-        self.switch_peer = not self.switch_peer
-        peer = self.realtime_peer if self.switch_peer else self.http_peer
+        # switch between realtime and http peer
+        self.use_realtime = not self.use_realtime
+        peer = self.realtime_peer if self.use_realtime else self.http_peer
         self.logger.info(f'{tag} received {method} {uri} by {peer.__class__.__name__}')
         # endpoint readiness check
         if method == 'GET' and uri == '/':
             if self.realtime_peer.connected():
                 writer.write(b'HTTP/1.1 200 OK\r\n\r\n')
             else:
+                await self.realtime_peer.recover()
                 writer.write(b'HTTP/1.1 500 Not ready\r\n\r\n')
             safe_close(writer)
             return
@@ -855,9 +858,6 @@ class HttpServer:
                 reader,
                 writer
             ))
-            # recover realtime peer if needed
-            if not self.realtime_peer.connected():
-                await self.realtime_peer.recover()
             return
 
         # https proxy
@@ -910,9 +910,6 @@ async def main():
         if '--server' in sys.argv:
             process = HttpServer(RealtimePeer())
             await process.start(port=8001)
-        elif '--http' in sys.argv:
-            process = HttpServer(HttpPeer())
-            await process.start(port=2234)
         else:
             process = HttpServer(RealtimePeer())
             await process.start(port=2234)
