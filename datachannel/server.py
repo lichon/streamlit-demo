@@ -22,7 +22,6 @@ class HttpServer:
         else:
             client_addr, client_port = 'unknown', 0
         tag = f'{client_addr}:{client_port}'
-        self.logger.info(f'{tag} new connection')
         try:
             request_line = (await reader.readline()).decode()
             method, uri, _ = request_line.split()
@@ -114,12 +113,14 @@ if __name__ == '__main__':
     debug = '--debug' in sys.argv
     use_rtc = '--rtc' in sys.argv
     rtc_peer = None
-    if use_rtc:
+    try:
         from rtc_peer import RtcPeer
         from aioice import ice
         ice.CONSENT_INTERVAL = 2
         ice.CONSENT_FAILURES = 5
-        rtc_peer = RtcPeer()
+        rtc_peer = RtcPeer() if use_rtc else None
+    except ImportError:
+        pass
         if not debug:
             logging.getLogger('realtime._async.client').setLevel(logging.WARNING)
     logging.basicConfig(

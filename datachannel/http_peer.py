@@ -75,7 +75,7 @@ class HttpPeer(ProxyPeer):
         # Support both text (opcode 0x1) and binary (opcode 0x2) frames
         while True:
             data = await reader.read(2)
-            if not data:
+            if not data or len(data) < 2:
                 break
             fin_opcode = data[0]
             opcode = fin_opcode & 0x0F
