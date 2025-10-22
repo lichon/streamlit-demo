@@ -784,7 +784,7 @@ class HttpPeer(ProxyPeer):
         trace_tag = f'{req.tid} {req.uri}'
         try:
             headers = await asyncio.wait_for(req.reader.readuntil(b'\r\n\r\n'), timeout=timeout)
-            netloc = req.uri.lstrip('/connect/')
+            netloc = req.uri.removeprefix('/connect/')
             host, port = netloc.split(':')
             if not host or not port:
                 _reject(req, 'Invalid host')

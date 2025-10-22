@@ -184,7 +184,7 @@ class HttpPeer(ProxyPeer):
         trace_tag = f'{req.tid} {req.uri}'
         try:
             headers = await asyncio.wait_for(req.reader.readuntil(b'\r\n\r\n'), timeout=timeout)
-            netloc = req.uri.lstrip('/connect/')
+            netloc = req.uri.removeprefix('/connect/')
             host, port = netloc.split(':')
             if not host or not port:
                 req.reject('Invalid host')
@@ -197,7 +197,7 @@ class HttpPeer(ProxyPeer):
             asyncio.ensure_future(self.safe_ws_to_tcp(req.reader, writer, netloc))
             await self.safe_tcp_to_ws(reader, req.writer, netloc)
         except Exception as e:
-            log(trace_tag, f'request WEBSOCKET failed: {e}')
+            log(trace_tag, f'do websocket failed: {e}')
             req.reject('Connection failed')
 
     async def do_request(self, req: LocalRequest, timeout: int = 10):
