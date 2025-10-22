@@ -97,9 +97,12 @@ class HttpPeer(ProxyPeer):
                 payload.extend(await reader.read(payload_len))
 
             while len(payload) < payload_len:
-                payload.extend(await reader.read(payload_len - len(payload)))
+                remain = await reader.read(payload_len - len(payload))
+                if not remain:
+                    break
+                payload.extend(remain)
 
-            if (len(payload) < payload_len):
+            if len(payload) < payload_len:
                 log(tag, f'ws->tcp read incomplete payload {len(payload)}/{payload_len}')
                 break
 

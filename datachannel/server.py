@@ -6,6 +6,16 @@ from http_peer import HttpPeer
 from proxy_peer import LocalRequest, ProxyPeer, safe_close
 
 
+async def profile_asyncio_tasks(interval=10):
+    logger = logging.getLogger('asyncio-profiler')
+    while True:
+        tasks = asyncio.all_tasks()
+        logger.debug(f'Profiling {len(tasks)} running asyncio tasks:')
+        for t in tasks:
+            logger.debug(f'Task: {t.get_name()} | {t.get_coro()} | State: {t._state}')
+        await asyncio.sleep(interval)
+
+
 class HttpServer:
     ''' http proxy '''
 
@@ -16,6 +26,7 @@ class HttpServer:
         self.switch_peer = False
 
     async def handle_request(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
+        self.logger.debug('Accepted new asyncio connection')
         peername = writer.get_extra_info('peername')
         if peername is not None and len(peername) >= 2:
             client_addr, client_port = peername[:2]
@@ -98,15 +109,20 @@ class HttpServer:
             await self.endpoint.stop()
 
 
-async def main(peer: ProxyPeer = None):
+async def main(peer: ProxyPeer = None, debug=False):
     process = None
+    profiler_task = None
     try:
+        if debug:
+            profiler_task = asyncio.create_task(profile_asyncio_tasks())
         process = HttpServer(peer)
         await process.start(port=2234)
     except KeyboardInterrupt:
         pass
     finally:
         await process.stop()
+        if profiler_task:
+            profiler_task.cancel()
 
 if __name__ == '__main__':
     # Setup logging configuration
@@ -127,4 +143,4 @@ if __name__ == '__main__':
         level=logging.DEBUG if debug else logging.INFO,
         format='%(asctime)s %(name)s %(levelname)s %(message)s'
     )
-    asyncio.run(main(rtc_peer))
+    asyncio.run(main(rtc_peer, debug=debug))
