@@ -137,10 +137,10 @@ if __name__ == '__main__':
         rtc_peer = RtcPeer() if use_rtc else None
     except ImportError:
         pass
-        if not debug:
-            logging.getLogger('realtime._async.client').setLevel(logging.WARNING)
     logging.basicConfig(
         level=logging.DEBUG if debug else logging.INFO,
         format='%(asctime)s %(name)s %(levelname)s %(message)s'
     )
+    if not debug:
+        logging.getLogger('realtime._async.client').setLevel(logging.WARNING)
     asyncio.run(main(rtc_peer, debug=debug))
