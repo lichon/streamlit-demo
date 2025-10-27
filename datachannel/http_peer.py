@@ -222,6 +222,7 @@ class HttpPeer(ProxyPeer):
                 return
 
             host, port = host_port if len(host_port) == 2 else (host_port[0], 443)
+            original_uri = original_uri[len(netloc):] or '/'
             reader, writer = await asyncio.open_connection(host, port, ssl=True)
 
             writer.write(f'{req.method} {original_uri} HTTP/1.1\r\n'.encode())
@@ -233,9 +234,9 @@ class HttpPeer(ProxyPeer):
                     writer.write(line.encode() + b'\r\n')
             await writer.drain()
 
-            log(trace_tag, f'connected to {original_uri}')
-            asyncio.ensure_future(self.relay_tcp_to_tcp(req.reader, writer, original_uri))
-            await self.relay_tcp_to_tcp(reader, req.writer, original_uri)
+            log(trace_tag, f'connected to {netloc}')
+            asyncio.ensure_future(self.relay_tcp_to_tcp(req.reader, writer, netloc))
+            await self.relay_tcp_to_tcp(reader, req.writer, netloc)
         except Exception as e:
             log(trace_tag, f'do proxy failed: {e}')
             req.reject('Connection failed')
