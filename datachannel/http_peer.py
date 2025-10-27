@@ -113,6 +113,16 @@ class HttpPeer(ProxyPeer):
         safe_close(writer)
         log(tag, 'ws->tcp relays done')
 
+    async def relay_tcp_to_tcp(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter, tag: str):
+        ''' Relay data from tcp StreamReader to tcp StreamWriter '''
+        while True:
+            data = await reader.read(self.RELAY_BUFFER_SIZE)
+            if not data:
+                break
+            await safe_write(writer, data)
+        safe_close(writer)
+        log(tag, 'tcp->tcp relays done')
+
     async def do_connect(self, req: LocalRequest, timeout):
         trace_tag = f'{req.tid} {req.uri}'
         reader, writer = None, None
@@ -200,10 +210,42 @@ class HttpPeer(ProxyPeer):
             log(trace_tag, f'do websocket failed: {e}')
             req.reject('Connection failed')
 
+    async def do_proxy(self, req: LocalRequest, timeout: int = 60):
+        trace_tag = f'{req.tid} {req.uri}'
+        try:
+            headers = await asyncio.wait_for(req.reader.readuntil(b'\r\n\r\n'), timeout=timeout)
+            original_uri = req.uri.removeprefix('/proxy/')
+            netloc = original_uri.split('/')[0]
+            host_port = netloc.split(':')
+            if not host_port:
+                req.reject('Invalid host')
+                return
+
+            host, port = host_port if len(host_port) == 2 else (host_port[0], 443)
+            reader, writer = await asyncio.open_connection(host, port, ssl=True)
+
+            writer.write(f'{req.method} {original_uri} HTTP/1.1\r\n'.encode())
+            header_lines = headers.decode().split('\r\n')
+            for line in header_lines:
+                if line.lower().startswith('host:'):
+                    writer.write(f'Host: {netloc}\r\n'.encode())
+                else:
+                    writer.write(line.encode() + b'\r\n')
+            await writer.drain()
+
+            log(trace_tag, f'connected to {original_uri}')
+            asyncio.ensure_future(self.relay_tcp_to_tcp(req.reader, writer, original_uri))
+            await self.relay_tcp_to_tcp(reader, req.writer, original_uri)
+        except Exception as e:
+            log(trace_tag, f'do proxy failed: {e}')
+            req.reject('Connection failed')
+
     async def do_request(self, req: LocalRequest, timeout: int = 10):
         if req.method == 'CONNECT':
             await self.do_connect(req, timeout)
         elif req.method == 'GET' and req.uri.startswith('/connect/'):
             await self.do_websocket(req, timeout)
+        elif req.uri.startswith('/proxy/'):
+            await self.do_proxy(req)
         else:
             req.reject('Not supported')

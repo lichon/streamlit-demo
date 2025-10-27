@@ -62,7 +62,7 @@ class HttpServer:
             safe_close(writer)
             return
         # proxy over websocket
-        if method == 'GET' and uri.startswith('/connect/'):
+        if uri.startswith('/connect/') or uri.startswith('/proxy/'):
             await self.http_peer.do_request(
                 LocalRequest(method, uri, tag, reader, writer)
             )
