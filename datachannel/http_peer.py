@@ -212,18 +212,22 @@ class HttpPeer(ProxyPeer):
 
     async def do_proxy(self, req: LocalRequest, timeout: int = 60):
         trace_tag = f'{req.tid} {req.uri}'
+        http_ssl = False
         try:
             headers = await asyncio.wait_for(req.reader.readuntil(b'\r\n\r\n'), timeout=timeout)
-            original_uri = req.uri.removeprefix('/proxy/')
+            original_uri = req.uri.removeprefix('/http/')
+            if req.uri.startswith('/https/'):
+                http_ssl = True
+                original_uri = req.uri.removeprefix('/https/')
             netloc = original_uri.split('/')[0]
             host_port = netloc.split(':')
             if not host_port:
                 req.reject('Invalid host')
                 return
 
-            host, port = host_port if len(host_port) == 2 else (host_port[0], 443)
+            host, port = host_port if len(host_port) == 2 else (host_port[0], 443 if http_ssl else 80)
             original_uri = original_uri[len(netloc):] or '/'
-            reader, writer = await asyncio.open_connection(host, port, ssl=True)
+            reader, writer = await asyncio.open_connection(host, port, ssl=http_ssl)
 
             writer.write(f'{req.method} {original_uri} HTTP/1.1\r\n'.encode())
             header_lines = headers.decode().split('\r\n')
@@ -246,7 +250,7 @@ class HttpPeer(ProxyPeer):
             await self.do_connect(req, timeout)
         elif req.method == 'GET' and req.uri.startswith('/connect/'):
             await self.do_websocket(req, timeout)
-        elif req.uri.startswith('/proxy/'):
+        elif req.uri.startswith('/http/') or req.uri.startswith('/https/'):
             await self.do_proxy(req)
         else:
             req.reject('Not supported')
