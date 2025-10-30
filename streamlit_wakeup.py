@@ -17,11 +17,14 @@ async def click_wake_up_button(page):
         await button.click()
         # Wait for the button to disappear
         try:
-            await page.wait_for_selector("//button[contains(text(),'Yes, get this app back up')]", state="detached", timeout=15000)
+            await page.wait_for_selector(
+                "//button[contains(text(),'Yes, get this app back up')]",
+                state="detached",
+                timeout=15000
+            )
             print("Button clicked and disappeared ✅ (app should be waking up)")
         except Exception:
             print("Button was clicked but did NOT disappear ❌ (possible failure)")
-            exit(1)
     else:
         print("No wake-up button found. Assuming app is already awake ✅")
 
@@ -37,18 +40,18 @@ async def main():
         ])
         page = await browser.new_page()
         try:
-            await page.goto(STREAMLIT_URL, timeout=30000)
-            print(f"Opened {STREAMLIT_URL}")
-
-            # await click_wake_up_button(page)
             while True:
-                await asyncio.sleep(60)  # Keep the script running
+                await page.goto(STREAMLIT_URL, timeout=30000)
+                print(f"Playwright Opened {STREAMLIT_URL}")
+
+                await click_wake_up_button(page)
+                await asyncio.sleep(36000)  # Keep the script running
         except Exception as e:
-            print(f"Unexpected error: {e}")
+            print(f"Playwright Unexpected error: {e}")
             exit(1)
         finally:
             await browser.close()
-            print("Script finished.")
+            print("Playwright Script finished.")
 
 
 class KeepAlive:
@@ -83,5 +86,5 @@ keepAlive = KeepAlive()
 
 
 if __name__ == "__main__":
-    os.system("playwright install")
+    os.system("playwright install chromium")
     asyncio.run(main())
