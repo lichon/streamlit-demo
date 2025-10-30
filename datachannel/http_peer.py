@@ -1,9 +1,50 @@
 import os
 import base64
 import hashlib
+import json
 
 import asyncio
 from proxy_peer import ProxyPeer, LocalRequest, log, safe_close, safe_write
+
+
+async def get_cname_from_alidns(domain: str) -> str:
+    '''Async get CNAME from AliDNS public resolver using only asyncio and stdlib'''
+    host = '223.5.5.5'
+    port = 443
+    path = f'/resolve?name={domain}&type=CNAME'
+    reader, writer = await asyncio.open_connection(host, port, ssl=True)
+    req = (
+        f'GET {path} HTTP/1.1\r\n'
+        f'Host: dns.alidns.com\r\n'
+        f'User-Agent: Python\r\n'
+        f'Accept: application/json\r\n'
+        f'Connection: close\r\n\r\n'
+    )
+    writer.write(req.encode())
+    await writer.drain()
+
+    response = b''
+    while True:
+        chunk = await reader.read(4096)
+        if not chunk:
+            break
+        response += chunk
+    writer.close()
+    await writer.wait_closed()
+
+    # Split headers and body
+    header_end = response.find(b'\r\n\r\n')
+    if header_end == -1:
+        return None
+    body = response[header_end + 4:]
+    try:
+        data = json.loads(body.decode())
+        for answer in data.get('Answer', []):
+            if answer.get('type') == 5:  # 5 = CNAME
+                return answer.get('data').rstrip('.')
+    except Exception:
+        return None
+    return None
 
 
 class HttpPeer(ProxyPeer):
@@ -14,23 +55,18 @@ class HttpPeer(ProxyPeer):
     CF_HTTPS_PORTS = (443, 2053, 2083, 2087, 2096, 8443)
 
     def __init__(self):
-        self.endpoint_cname = self._get_endpoint_cname()
         self.https_port_idx = 0
+        self.endpoint_cname = os.environ.get('ENDPOINT_DOMAIN', 'localhost')
+        asyncio.ensure_future(self._get_endpoint_cname())
 
-    def _get_endpoint_cname(self):
+    async def _get_endpoint_cname(self):
         ''' get endpoint domain cname '''
         endpoint_domain = os.environ.get('ENDPOINT_DOMAIN', 'localhost')
-        # request dns cname
         try:
-            import dns.resolver
-            answers = dns.resolver.resolve(endpoint_domain, 'CNAME', raise_on_no_answer=False)
-            for r in answers:
-                cname = str(r.target).rstrip('.')
-                log('', f'get_endpoint_cname(dnspython) {cname}')
-                return cname
-        except Exception as e:
-            log('', f'get_endpoint_cname(dnspython) error {e}')
-            return None
+            self.endpoint_cname = await get_cname_from_alidns(endpoint_domain)
+            log('', f'get_endpoint_cname(alidns) {self.endpoint_cname}')
+        except Exception as e2:
+            log('', f'get_endpoint_cname(alidns) error {e2}')
 
     async def relay_tcp_to_ws(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter, tag: str):
         ''' Relay data from StreamReader to ws StreamWriter '''
@@ -153,7 +189,7 @@ class HttpPeer(ProxyPeer):
             if not http101.decode().startswith('HTTP/1.1 101'):
                 req.reject('Server failed')
                 safe_close(writer)
-                self.endpoint_cname = self._get_endpoint_cname()
+                await self._get_endpoint_cname()
                 return
 
             # remote connect success, reply http200 to client
@@ -164,7 +200,7 @@ class HttpPeer(ProxyPeer):
             await self.safe_ws_to_tcp(reader, req.writer, trace_tag)
         except Exception as e:
             log(trace_tag, f'request CONNECT failed: {e}')
-            self.endpoint_cname = self._get_endpoint_cname()
+            await self._get_endpoint_cname()
             req.reject('Connection failed')
             safe_close(writer)
 
