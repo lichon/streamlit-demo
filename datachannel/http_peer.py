@@ -2,6 +2,7 @@ import os
 import base64
 import hashlib
 import json
+import time
 
 import asyncio
 from proxy_peer import ProxyPeer, LocalRequest, log, safe_close, safe_write
@@ -108,11 +109,27 @@ class HttpPeer(ProxyPeer):
 
     async def relay_ws_to_tcp(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter, tag: str):
         ''' Relay data from ws StreamReader to StreamWriter '''
+        enable_rate_limit = 'github' in tag
+        packets_sent = 0
+        start_time = time.monotonic()
         # Support both text (opcode 0x1) and binary (opcode 0x2) frames
         while True:
+            current_time = time.monotonic()
+            if current_time - start_time >= 1.0:
+                packets_sent = 0
+                start_time = current_time
+
+            # 250 buffer per second rate limit
+            if enable_rate_limit and packets_sent >= 250:
+                log(tag, f'ws->tcp rate limit reached, sleeping {start_time + 1.0 - current_time:.3f}s')
+                await asyncio.sleep(start_time + 1.0 - current_time)
+                packets_sent = 0
+                start_time = time.monotonic()
+                continue
             data = await reader.read(2)
             if not data or len(data) < 2:
                 break
+            packets_sent += 1
             fin_opcode = data[0]
             opcode = fin_opcode & 0x0F
             mask = (data[1] >> 7) & 0x01

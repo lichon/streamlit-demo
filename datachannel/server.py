@@ -109,14 +109,14 @@ class HttpServer:
             await self.endpoint.stop()
 
 
-async def main(peer: ProxyPeer = None, debug=False):
+async def main(port: int, peer: ProxyPeer = None, debug=False):
     process = None
     profiler_task = None
     try:
         if debug:
             profiler_task = asyncio.create_task(profile_asyncio_tasks())
         process = HttpServer(peer)
-        await process.start(port=2234)
+        await process.start(port)
     except KeyboardInterrupt:
         pass
     finally:
@@ -128,6 +128,7 @@ if __name__ == '__main__':
     # Setup logging configuration
     debug = '--debug' in sys.argv
     use_rtc = '--rtc' in sys.argv
+    port = int(sys.argv[-1]) if sys.argv[-1].isdigit() else 2234
     rtc_peer = None
     try:
         from rtc_peer import RtcPeer
@@ -143,4 +144,4 @@ if __name__ == '__main__':
     )
     if not debug:
         logging.getLogger('realtime._async.client').setLevel(logging.WARNING)
-    asyncio.run(main(rtc_peer, debug=debug))
+    asyncio.run(main(port, rtc_peer, debug=debug))
