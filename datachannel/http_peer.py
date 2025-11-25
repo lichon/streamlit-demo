@@ -270,9 +270,11 @@ class HttpPeer(ProxyPeer):
         if (req.uri.startswith('/http/')):
             uri = req.uri.removeprefix('/http/')
             netloc = uri.split('/')[0]
+            uri = uri[len(netloc):] or '/'
         if (req.uri.startswith('/https/')):
             uri = req.uri.removeprefix('/https/')
             netloc = uri.split('/')[0]
+            uri = uri[len(netloc):] or '/'
             use_ssl = True
         if (req.uri.startswith('/r/')):
             uri = req.uri
@@ -296,7 +298,6 @@ class HttpPeer(ProxyPeer):
                 return
 
             host, port = host_port if len(host_port) == 2 else (host_port[0], 443 if http_ssl else 80)
-            uri = uri[len(netloc):] or '/'
             reader, writer = await asyncio.open_connection(host, port, ssl=http_ssl)
 
             writer.write(f'{req.method} {uri} HTTP/1.1\r\n'.encode())
