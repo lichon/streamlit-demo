@@ -109,7 +109,7 @@ class HttpPeer(ProxyPeer):
 
     async def relay_ws_to_tcp(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter, tag: str):
         ''' Relay data from ws StreamReader to StreamWriter '''
-        enable_rate_limit = 'github' in tag
+        enable_rate_limit = 'github' in tag or 'google.com' in tag
         packets_sent = 0
         start_time = time.monotonic()
         # Support both text (opcode 0x1) and binary (opcode 0x2) frames
