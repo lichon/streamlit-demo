@@ -17,7 +17,7 @@ def ttyd(
     exit_on_disconnect: bool = False,
     base_url: str = None,
 ):
-    flags = f"-b /ttyd --port {port} "
+    flags = f"--port {port} "
     if base_url:
         flags += f"-b {base_url} "
     if exit_on_disconnect:
