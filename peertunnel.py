@@ -2,11 +2,13 @@ import subprocess
 import atexit
 import os
 import sys
+import signal
 
 
 class PeerTunnel:
-    def __init__(self):
+    def __init__(self, pid_file: str = 'peertunnel.pid'):
         self.proc: subprocess.Popen | None = None
+        self.pid_file: str = pid_file
 
     def __call__(
         self,
@@ -16,6 +18,19 @@ class PeerTunnel:
             self.start_tunnel(secrets)
 
         atexit.register(self.proc.terminate)
+
+    def kill_old_pid(self) -> None:
+        if not os.path.exists(self.pid_file):
+            return
+        with open(self.pid_file, 'r') as f:
+            pid = int(f.read().strip())
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                print(f"Process {pid} not found")
+            else:
+                print(f"Killing old PeerTunnel process {pid}")
+                os.kill(pid, signal.SIGTERM)
 
     def terminate(self) -> None:
         if self.proc:
@@ -37,6 +52,7 @@ class PeerTunnel:
             shell=False,
             env=env
         )
+        open(self.pid_file, 'w').write(str(self.proc.pid))
 
 
 peerTunnel = PeerTunnel()

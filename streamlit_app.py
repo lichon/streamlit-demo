@@ -52,15 +52,14 @@ if os.getenv("HOSTNAME") == "streamlit":
     # start playwright
     keepAlive(secrets=st.secrets)
     # set dns for cloudflared
-    tty_url = cloudflared(1234).tunnel + '/r/localhost:1234'
     peer_url = cloudflared(2234, update_dns=True, secrets=st.secrets).tunnel
+    tty_url = peer_url + '/r/localhost:1234'
 
 
 st.set_page_config(page_title="Streamlit Terminal", layout="wide")
 # embed ttyd
 iframe(tty_url, height=700)
 # info on ttyd port
-st.text(f"ttyd server is running at : {tty_url}")
 st.text(f"peer server is running at : {peer_url}")
 st.text(
     f"peer pid {peerTunnel.proc.pid if peerTunnel.is_alive() else 'dead'} "
