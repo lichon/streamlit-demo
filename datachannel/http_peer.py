@@ -288,17 +288,18 @@ class HttpPeer(ProxyPeer):
         http_ssl = False
         try:
             headers = await asyncio.wait_for(req.reader.readuntil(b'\r\n\r\n'), timeout=timeout)
-            original_uri, netloc, http_ssl = self._get_original_netloc(req)
+            netloc, uri, http_ssl = self._get_original_netloc(req)
+            log(trace_tag, f'{netloc} {uri} ssl={http_ssl}')
             host_port = netloc.split(':')
             if not host_port:
                 req.reject('Invalid host')
                 return
 
             host, port = host_port if len(host_port) == 2 else (host_port[0], 443 if http_ssl else 80)
-            original_uri = original_uri[len(netloc):] or '/'
+            uri = uri[len(netloc):] or '/'
             reader, writer = await asyncio.open_connection(host, port, ssl=http_ssl)
 
-            writer.write(f'{req.method} {original_uri} HTTP/1.1\r\n'.encode())
+            writer.write(f'{req.method} {uri} HTTP/1.1\r\n'.encode())
             header_lines = headers.decode().split('\r\n')
             for line in header_lines:
                 if line.lower().startswith('host:'):
