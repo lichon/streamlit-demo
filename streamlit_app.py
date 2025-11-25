@@ -52,8 +52,8 @@ if os.getenv("HOSTNAME") == "streamlit":
     # start playwright
     keepAlive(secrets=st.secrets)
     # set dns for cloudflared
+    tty_url = cloudflared(1234).tunnel
     peer_url = cloudflared(2234, update_dns=True, secrets=st.secrets).tunnel
-    tty_url = peer_url + '/http/127.0.0.1:1234'
 
 
 st.set_page_config(page_title="Streamlit Terminal", layout="wide")
