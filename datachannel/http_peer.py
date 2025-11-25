@@ -263,16 +263,32 @@ class HttpPeer(ProxyPeer):
             log(trace_tag, f'do websocket failed: {e}')
             req.reject('Connection failed')
 
+    def _get_original_netloc(self, req: LocalRequest) -> str:
+        use_ssl = False
+        uri = ''
+        netloc = ''
+        if (req.uri.startswith('/http/')):
+            uri = req.uri.removeprefix('/http/')
+            netloc = uri.split('/')[0]
+        if (req.uri.startswith('/https/')):
+            uri = req.uri.removeprefix('/https/')
+            netloc = uri.split('/')[0]
+            use_ssl = True
+        if (req.uri.startswith('/r/')):
+            uri = req.uri
+            netloc = uri.split('/')[2]
+        if (req.uri.startswith('/rs/')):
+            uri = req.uri
+            netloc = uri.split('/')[2]
+            use_ssl = True
+        return netloc, uri, use_ssl
+
     async def do_proxy(self, req: LocalRequest, timeout: int = 60):
         trace_tag = f'{req.tid} {req.uri}'
         http_ssl = False
         try:
             headers = await asyncio.wait_for(req.reader.readuntil(b'\r\n\r\n'), timeout=timeout)
-            original_uri = req.uri.removeprefix('/http/')
-            if req.uri.startswith('/https/'):
-                http_ssl = True
-                original_uri = req.uri.removeprefix('/https/')
-            netloc = original_uri.split('/')[0]
+            original_uri, netloc, http_ssl = self._get_original_netloc(req)
             host_port = netloc.split(':')
             if not host_port:
                 req.reject('Invalid host')
@@ -304,6 +320,10 @@ class HttpPeer(ProxyPeer):
         elif req.method == 'GET' and req.uri.startswith('/connect/'):
             await self.do_websocket(req, timeout)
         elif req.uri.startswith('/http/') or req.uri.startswith('/https/'):
+            # request proxy
+            await self.do_proxy(req)
+        elif req.uri.startswith('/r/') or req.uri.startswith('/rs/'):
+            # reverse proxy
             await self.do_proxy(req)
         else:
             req.reject('Not supported')
