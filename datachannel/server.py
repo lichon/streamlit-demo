@@ -138,6 +138,7 @@ if __name__ == '__main__':
         ice.CONSENT_INTERVAL = 2
         ice.CONSENT_FAILURES = 5
         rtc_peer = RtcPeer() if use_rtc else None
+        print('using rtc:', rtc_peer)
     except ImportError:
         pass
     logging.basicConfig(
