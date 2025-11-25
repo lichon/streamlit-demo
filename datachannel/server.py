@@ -62,7 +62,9 @@ class HttpServer:
             safe_close(writer)
             return
         # proxy over websocket
-        if uri.startswith('/connect/') or uri.startswith('/http/') or uri.startswith('/https/'):
+        if uri.startswith('/connect/') or \
+            uri.startswith('/r/') or uri.startswith('/rs/') or \
+            uri.startswith('/http/') or uri.startswith('/https/'):
             await self.http_peer.do_request(
                 LocalRequest(method, uri, tag, reader, writer)
             )
