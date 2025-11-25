@@ -307,6 +307,7 @@ class HttpPeer(ProxyPeer):
                     writer.write(f'Host: {netloc}\r\n'.encode())
                 else:
                     writer.write(line.encode() + b'\r\n')
+            writer.write(b'\r\n')
             await writer.drain()
 
             log(trace_tag, f'connected to {netloc}')
