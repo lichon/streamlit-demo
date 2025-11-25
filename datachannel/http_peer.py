@@ -303,6 +303,8 @@ class HttpPeer(ProxyPeer):
             writer.write(f'{req.method} {uri} HTTP/1.1\r\n'.encode())
             header_lines = headers.decode().split('\r\n')
             for line in header_lines:
+                if not line:
+                    continue
                 if line.lower().startswith('host:'):
                     writer.write(f'Host: {netloc}\r\n'.encode())
                 else:
