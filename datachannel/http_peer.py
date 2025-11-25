@@ -183,6 +183,7 @@ class HttpPeer(ProxyPeer):
         http_port = self.CF_HTTPS_PORTS[self.https_port_idx]
         http_ssl = True
         if self.endpoint_cname == 'localhost':
+            # local test without ssl
             http_port = 2234
             http_ssl = False
         try:
@@ -286,6 +287,7 @@ class HttpPeer(ProxyPeer):
         return netloc, uri, use_ssl
 
     async def do_proxy(self, req: LocalRequest, timeout: int = 60):
+        local_addr = req.writer.get_extra_info('sockname')
         trace_tag = f'{req.tid} {req.uri}'
         http_ssl = False
         try:
@@ -298,6 +300,11 @@ class HttpPeer(ProxyPeer):
                 return
 
             host, port = host_port if len(host_port) == 2 else (host_port[0], 443 if http_ssl else 80)
+            # prevent loopback attack
+            if (port == local_addr[1]):
+                req.reject('Invalid port')
+                return
+
             reader, writer = await asyncio.open_connection(host, port, ssl=http_ssl)
 
             writer.write(f'{req.method} {uri} HTTP/1.1\r\n'.encode())
@@ -321,14 +328,16 @@ class HttpPeer(ProxyPeer):
 
     async def do_request(self, req: LocalRequest, timeout: int = 10):
         if req.method == 'CONNECT':
+            # local proxy server request dispatcher
             await self.do_connect(req, timeout)
         elif req.method == 'GET' and req.uri.startswith('/connect/'):
+            # remote server's websocket relay request
             await self.do_websocket(req, timeout)
         elif req.uri.startswith('/http/') or req.uri.startswith('/https/'):
-            # request proxy
+            # remote server's http proxy request handler
             await self.do_proxy(req)
         elif req.uri.startswith('/r/') or req.uri.startswith('/rs/'):
-            # reverse proxy
+            # remote server's reverse proxy request handler
             await self.do_proxy(req)
         else:
             req.reject('Not supported')
