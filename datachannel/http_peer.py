@@ -301,7 +301,7 @@ class HttpPeer(ProxyPeer):
 
             host, port = host_port if len(host_port) == 2 else (host_port[0], 443 if http_ssl else 80)
             # prevent loopback attack
-            if (port == local_addr[1]):
+            if (port == local_addr[1] and host in ['localhost', '127.0.0.1', '::1']):
                 req.reject('Invalid port')
                 return
 
