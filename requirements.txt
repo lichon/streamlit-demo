@@ -2,5 +2,5 @@ streamlit
 pycloudflared
 streamlit_ttyd
 playwright
-aiortc==1.13.0
+aiortc==1.14.0
 supabase==2.24.0
