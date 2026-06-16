@@ -62,6 +62,6 @@ iframe(tty_url, height=700)
 # info on ttyd port
 st.text(f"peer server is running at : {peer_url}")
 st.text(
-    f"peer pid {peerTunnel.proc.pid if peerTunnel.is_alive() else 'dead'} "
+    f"server pid {peerTunnel.proc.pid if peerTunnel.is_alive() else 'dead'} "
     f"playwright pid {keepAlive.proc.pid if keepAlive.is_alive() else 'dead'}"
 )

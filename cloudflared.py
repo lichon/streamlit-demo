@@ -92,6 +92,8 @@ class TryCloudflare:
             urls = self.running[port]
             if verbose:
                 self._print(urls.tunnel, urls.metrics)
+            if update_dns:
+                patch_dns(secrets['dns_api_url'], secrets['dns_api_key'], tunnel_url)
             return urls
 
         self.running[port] = Urls('running', '', None)
